@@ -79,80 +79,160 @@ function update_node_phi!(particle_list, node_list, BC)
     for node in node_list
         node.phi = 0.0
     end
-    max_node_X = node_list[end].X
     N_nodes = length(node_list)
-    for particle_spec in particle_list
-        for i = 1:length(particle_spec.xs)
-            particle_x = particle_spec.xs[i]
-            if BC == "zero" && particle_x < 0 || particle_x > max_node_X
-                continue
-            elseif BC == "periodic"
-                node_idx_lo = mod(floor(Int64, particle_x), N_nodes)
-                node_idx_hi = mod( ceil(Int64, particle_x), N_nodes)
-            else
-                node_idx_lo = floor(Int64, particle_x)
-                node_idx_hi =  ceil(Int64, particle_x)
+
+    #= CODE WITH FEWER MEMORY ALLOCATIONS =#
+    if BC == "zero"
+        for particle_spec in particle_list
+            for i = 1:length(particle_spec.xs)
+                if particle_spec.xs[i]<0 || particle_spec.xs[i]>node_list[end].X
+                    continue
+                end
+                node_idx_lo = floor(Int64, particle_spec.xs[i]) + 1
+                # node_idx_hi =  ceil(Int64, particle_spec.xs[i]) + 1
+                # node_idx_hi = node_idx_lo + 1
+
+                node_list[node_idx_lo].phi += particle_spec.q/(node_list[node_idx_lo + 1].X - particle_spec.xs[i])
+                node_list[node_idx_lo + 1].phi += particle_spec.q/(particle_spec.xs[i] - node_list[node_idx_lo].X)
             end
+        end
+    elseif BC == "periodic"
+        for particle_spec in particle_list
+            for i = 1:length(particle_spec.xs)
+                node_idx_lo = mod(floor(Int64, particle_spec.xs[i]), N_nodes)+1
+                # node_idx_hi = mod(ceil(Int64, particle_spec.xs[i]), N_nodes)+1
+                # node_idx_hi = node_idx_lo + 1
 
-            node_lo = node_list[node_idx_lo + 1]
-            node_hi = node_list[node_idx_hi + 1]
-
-            node_lo.phi += particle_spec.q/(node_hi.X - particle_x)
-            node_hi.phi += particle_spec.q/(particle_x - node_lo.X)
+                node_list[node_idx_lo].phi += particle_spec.q/(node_list[node_idx_lo + 1].X - particle_spec.xs[i])
+                node_list[node_idx_lo + 1].phi += particle_spec.q/(particle_spec.xs[i] - node_list[node_idx_lo].X)
+            end
         end
     end
+
+    #= SIMPLER CODE =#
+    # for particle_spec in particle_list
+    #     for i = 1:length(particle_spec.xs)
+    #         particle_x = particle_spec.xs[i]
+    #         if BC == "zero" && particle_x < 0 || particle_x > node_list[end].X
+    #             continue
+    #         elseif BC == "periodic"
+    #             node_idx_lo = mod(floor(Int64, particle_x), N_nodes)
+    #             node_idx_hi = mod( ceil(Int64, particle_x), N_nodes)
+    #         else
+    #             node_idx_lo = floor(Int64, particle_x)
+    #             node_idx_hi =  ceil(Int64, particle_x)
+    #         end
+
+    #         node_lo = node_list[node_idx_lo + 1]
+    #         node_hi = node_list[node_idx_hi + 1]
+
+    #         node_lo.phi += particle_spec.q/(node_hi.X - particle_x)
+    #         node_hi.phi += particle_spec.q/(particle_x - node_lo.X)
+    #     end
+    # end
 end
 
 function update_node_E!(node_list, BC)
     N_nodes = length(node_list)
-    for i = 1:N_nodes
-        if i == 1 && BC == "zero"
-            phi_lo = 0.0
-        elseif i == 1 && BC == "periodic"
-            phi_lo = node_list[end].phi
-        else
-            phi_lo = node_list[i-1].phi
-        end
 
-        if i == N_nodes && BC == "zero"
-            phi_hi = 0.0
-        elseif i == N_nodes && BC == "periodic"
-            phi_hi = node_list[1].phi
-        else
-            phi_hi = node_list[i+1].phi
+    #= CODE WITH FEWER MEMORY ALLOCATIONS =#
+    if BC == "zero"
+        node_list[1].E = -node_list[2].phi/2
+        for i = 2:N_nodes-1
+            node_list[i].E = (node_list[i-1].phi - node_list[i+1].phi)/2
         end
+        node_list[N_nodes].E = node_list[N_nodes-1].phi/2
 
-        node_list[i].E = (phi_lo - phi_hi)/2
+    elseif BC == "periodic"
+        node_list[1].E = (node_list[end].phi - node_list[2].phi)/2
+        for i = 2:N_nodes-1
+            node_list[i].E = (node_list[i-1].phi - node_list[i+1].phi)/2
+        end
+        node_list[N_nodes].E = (node_list[N_nodes-1].phi - node_list[1].phi)/2
+        
     end
+
+    #= SIMPLER CODE =#
+    # for i = 1:N_nodes
+    #     if i == 1 && BC == "zero"
+    #         phi_lo = 0.0
+    #     elseif i == 1 && BC == "periodic"
+    #         phi_lo = node_list[end].phi
+    #     else
+    #         phi_lo = node_list[i-1].phi
+    #     end
+
+    #     if i == N_nodes && BC == "zero"
+    #         phi_hi = 0.0
+    #     elseif i == N_nodes && BC == "periodic"
+    #         phi_hi = node_list[1].phi
+    #     else
+    #         phi_hi = node_list[i+1].phi
+    #     end
+
+    #     node_list[i].E = (phi_lo - phi_hi)/2
+    # end
 end
 
 function update_particle_Es!(particle_list, node_list, BC)
-    max_node_X = node_list[end].X
     N_nodes = length(node_list)
-    for particle_spec in particle_list
-        for i = 1:length(particle_spec.xs)
-            particle_x = particle_spec.xs[i]
-            if BC == "zero" && particle_x < 0 || particle_x > max_node_X
-                particle_spec.Es[i] = 0
-                continue
-            elseif BC == "periodic"
-                node_idx_lo = mod(floor(Int64, particle_x), N_nodes)
-                node_idx_hi = mod( ceil(Int64, particle_x), N_nodes)
-            else
-                node_idx_lo = floor(Int64, particle_x)
-                node_idx_hi =  ceil(Int64, particle_x)
+    
+    #= CODE WITH FEWER MEMORY ALLOCATIONS =#
+    if BC == "zero" && 
+        for particle_spec in particle_list
+            for i = 1:length(particle_spec.xs)
+                if particle_spec.xs[i]<0 || particle_spec.xs[i]>node_list[end].X
+                    particle_spec.Es[i] = 0
+                    particle_spec.phis[i] = 0
+                    continue
+                end
+                node_idx_lo = floor(Int64, particle_spec.xs[i]) + 1
+                # node_idx_hi =  ceil(Int64, particle_spec.xs[i]) + 1
+                
+                particle_spec.Es[i] = (node_list[node_idx_lo + 1].X - particle_spec.xs[i]) * node_list[node_idx_lo].E + (particle_spec.xs[i] - node_list[node_idx_lo].X) * node_list[node_idx_lo + 1].E
+
+                particle_spec.phis[i] = (node_list[node_idx_lo + 1].X - particle_spec.xs[i]) * node_list[node_idx_lo].phi + (particle_spec.xs[i] - node_list[node_idx_lo].X) * node_list[node_idx_lo + 1].phi
             end
+        end
+    elseif BC == "periodic"
+        for particle_spec in particle_list
+            for i = 1:length(particle_spec.xs)
+                node_idx_lo = mod(floor(Int64, particle_spec.xs[i]), N_nodes)+1
+                # node_idx_hi = mod(ceil(Int64, particle_spec.xs[i]), N_nodes)+1
+                
+                particle_spec.Es[i] = (node_list[node_idx_lo + 1].X - particle_spec.xs[i]) * node_list[node_idx_lo].E + (particle_spec.xs[i] - node_list[node_idx_lo].X) * node_list[node_idx_lo + 1].E
 
-            node_lo = node_list[node_idx_lo + 1]
-            node_hi = node_list[node_idx_hi + 1]
-            
-            particle_spec.Es[i] = (node_hi.X - particle_x)*node_lo.E
-                                + (particle_x - node_lo.X)*node_hi.E
-
-            particle_spec.phis[i] = (node_hi.X - particle_x)*node_lo.phi
-                                + (particle_x - node_lo.X)*node_hi.phi
+                particle_spec.phis[i] = (node_list[node_idx_lo + 1].X - particle_spec.xs[i]) * node_list[node_idx_lo].phi + (particle_spec.xs[i] - node_list[node_idx_lo].X) * node_list[node_idx_lo + 1].phi
+            end
         end
     end
+
+    #= SIMPLER CODE =#
+    # max_node_X = node_list[end].X
+    # for particle_spec in particle_list
+    #     for i = 1:length(particle_spec.xs)
+    #         particle_x = particle_spec.xs[i]
+    #         if BC == "zero" && particle_x < 0 || particle_x > max_node_X
+    #             particle_spec.Es[i] = 0
+    #             continue
+    #         elseif BC == "periodic"
+    #             node_idx_lo = mod(floor(Int64, particle_x), N_nodes)
+    #             node_idx_hi = mod( ceil(Int64, particle_x), N_nodes)
+    #         else
+    #             node_idx_lo = floor(Int64, particle_x)
+    #             node_idx_hi =  ceil(Int64, particle_x)
+    #         end
+
+    #         node_lo = node_list[node_idx_lo + 1]
+    #         node_hi = node_list[node_idx_hi + 1]
+            
+    #         particle_spec.Es[i] = (node_hi.X - particle_x)*node_lo.E
+    #                             + (particle_x - node_lo.X)*node_hi.E
+
+    #         particle_spec.phis[i] = (node_hi.X - particle_x)*node_lo.phi
+    #                             + (particle_x - node_lo.X)*node_hi.phi
+    #     end
+    # end
 end
 
 function update_particle_vs!(particle_list, dt)
@@ -167,15 +247,32 @@ end
 
 function update_particle_xs!(particle_list, node_list, BC)
     N_nodes = length(node_list)
-    for particle_spec in particle_list
-        for i = 1:length(particle_spec.xs)
-            if BC == "periodic"
+
+    #= CODE WITH FEWER EVALUATIONS =#
+    if BC == "periodic"
+        for particle_spec in particle_list
+            for i = 1:length(particle_spec.xs)
                 particle_spec.xs[i] = mod(particle_spec.xs[i] + particle_spec.vs[i], N_nodes)
-            else
+            end
+        end
+    else
+        for particle_spec in particle_list
+            for i = 1:length(particle_spec.xs)
                 particle_spec.xs[i] += particle_spec.vs[i]
             end
         end
     end
+
+    #= MORE COMPACT CODE=#
+    # for particle_spec in particle_list
+    #     for i = 1:length(particle_spec.xs)
+    #         if BC == "periodic"
+    #             particle_spec.xs[i] = mod(particle_spec.xs[i] + particle_spec.vs[i], N_nodes)
+    #         else
+    #             particle_spec.xs[i] += particle_spec.vs[i]
+    #         end
+    #     end
+    # end
 end
 
 function init_particle_vs!(particle_list, node_list, BC, dt)
@@ -214,7 +311,7 @@ end
 function run_sim(BC = "periodic", N_steps_max = 100, N_steps_save = 25)
     particle_list, node_list, dx, dt = init_cold_stationary(BC = BC)
     step_idx = 0
-    fig_idx = 0
+    # fig_idx = 0
     N_species = length(particle_list)
     KEs = [Array{Float64, 1}(undef, N_steps_max) for i=1:N_species]
     PEs = [Array{Float64, 1}(undef, N_steps_max) for i=1:N_species]
@@ -233,7 +330,7 @@ function run_sim(BC = "periodic", N_steps_max = 100, N_steps_save = 25)
             KEs[k][step_idx] = sum(0.5 * dx/dt * dx/dt * me * particle_list[k].vs .* particle_list[k].vs_old * particle_list[k].m)
             
             #= Potential Energy qΦ =#
-            PEs[k][step_idx] = sum(particle_list[k].phis * kce/dx * particle_list[k].q * e)
+            PEs[k][step_idx] = sum(particle_list[k].phis * kce/dx * particle_list[k].q * e) 
 
             #= Total Energy =#
             TEs[k][step_idx] = KEs[k][step_idx] + PEs[k][step_idx]
@@ -268,6 +365,8 @@ function run_sim(BC = "periodic", N_steps_max = 100, N_steps_save = 25)
         # end
     end
 
+    times = [i*dt for i = 1:N_steps_max]
+
     fig1 = figure(0)
     fig2 = figure(1)
     (ax1, ax2) = fig1.subplots(nrows = 2, ncols = 1)
@@ -276,27 +375,27 @@ function run_sim(BC = "periodic", N_steps_max = 100, N_steps_save = 25)
     ax2.set_title(particle_list[2].name)
     ax3.set_title(particle_list[1].name)
     ax4.set_title(particle_list[2].name)
-    ax1.plot(KEs[1],
+    ax1.plot(times, KEs[1],
         color = (0.6,0.6,0.6), 
         linestyle = ":", 
         label = "Kinetic Energy")
-    ax2.plot(KEs[2],
+    ax2.plot(times, KEs[2],
         color = (0.6,0.6,0.6), 
         linestyle = ":", 
         label = "Kinetic Energy")
-    ax1.plot(PEs[1],
+    ax1.plot(times, PEs[1],
         color = (0.3,0.3,0.3), 
         linestyle = "-.", 
         label = "Potential Energy")
-    ax2.plot(PEs[2],
+    ax2.plot(times, PEs[2],
         color = (0.3,0.3,0.3), 
         linestyle = "-.", 
         label = "Potential Energy")
-    ax3.plot(TEs[1],
+    ax3.plot(times, TEs[1],
         color = (0,0,0), 
         linestyle = "-", 
         label = "Total Energy")
-    ax4.plot(TEs[2],
+    ax4.plot(times, TEs[2],
         color = (0,0,0), 
         linestyle = "-", 
         label = "Total Energy")
@@ -304,4 +403,5 @@ function run_sim(BC = "periodic", N_steps_max = 100, N_steps_save = 25)
     ax2.legend()
     ax3.legend()
     ax4.legend()
+    return KEs, PEs, TEs
 end
