@@ -128,7 +128,6 @@ end
 
 function update_particle_Es!(particle_list, node_list, BC)
     max_node_X = node_list[end].X
-    # min_node_X = node_list[1].X
     N_nodes = length(node_list)
     for particle_spec in particle_list
         for i = 1:length(particle_spec.xs)
@@ -184,12 +183,14 @@ function init_particle_vs!(particle_list, node_list, BC, dt)
     update_node_E!(node_list, BC)
     update_particle_Es!(particle_list, node_list, BC)
     for particle_spec in particle_list
-        for i = 1:length(particle_spec.xs)
-            particle_spec.vs[i] += (-particle_spec.q/2)/particle_spec.m * particle_spec.Es[i] * dt
-        end
+        particle_spec.vs .+= (-particle_spec.q/2)/particle_spec.m*particle_spec.Es*dt
+        # for i = 1:length(particle_spec.xs)
+        #     particle_spec.vs[i] += (-particle_spec.q/2)/particle_spec.m * particle_spec.Es[i] * dt
+        # end
     end
 end
 
+#= TEST CASE: Cold, stationary plasma - test stability =#
 function init_cold_stationary(;
     names = ["electrons", "protons"], 
     NPs = [Int64(1e6), Int64(1e6)], 
@@ -204,12 +205,6 @@ function init_cold_stationary(;
     node_list, dx = make_nodes(L_sys, N_nodes)
     N_species = length(names)
     for k = 1:N_species
-        # N_particles = NPs[k]
-        # particle_x_intrv = (L_sys/N_particles)/dx
-        # particle_x_shift = k/(N_species+1) * particle_x_intrv
-        # for i = 1:N_particles
-            # particle_list[k].xs[i] = particle_x_intrv * i + particle_x_shift
-        # end
         particle_list[k].xs = rand(Uniform(0, L_sys), NPs[k])/dx
     end
     init_particle_vs!(particle_list, node_list, BC, dt)
@@ -218,49 +213,95 @@ end
 
 function run_sim(BC = "periodic", N_steps_max = 100, N_steps_save = 25)
     particle_list, node_list, dx, dt = init_cold_stationary(BC = BC)
-    N_steps = 0
+    step_idx = 0
     fig_idx = 0
-    KE = []
-    PE = []
-    while N_steps < N_steps_max
+    N_species = length(particle_list)
+    KEs = [Array{Float64, 1}(undef, N_steps_max) for i=1:N_species]
+    PEs = [Array{Float64, 1}(undef, N_steps_max) for i=1:N_species]
+    TEs = [Array{Float64, 1}(undef, N_steps_max) for i=1:N_species]
+    while step_idx < N_steps_max
         update_node_phi!(particle_list, node_list, BC)
         update_node_E!(node_list, BC)
         update_particle_Es!(particle_list, node_list, BC)
         update_particle_vs!(particle_list, dt)
         update_particle_xs!(particle_list, node_list, BC)
-        N_steps += 1
+        step_idx += 1
 
-        #= ENERGY CONSERVATION =#
-        #= Potential Energy qΦ =#
+        #= ENERGY CONSERVATION TRACKING =#
+        for k in 1:N_species
+            #= Kinetic Energy m*Vold*Vnew/2 =#
+            KEs[k][step_idx] = sum(0.5 * dx/dt * dx/dt * me * particle_list[k].vs .* particle_list[k].vs_old * particle_list[k].m)
+            
+            #= Potential Energy qΦ =#
+            PEs[k][step_idx] = sum(particle_list[k].phis * kce/dx * particle_list[k].q * e)
 
-        #= Kinetic Energy m*Vold*Vnew/2 =#
+            #= Total Energy =#
+            TEs[k][step_idx] = KEs[k][step_idx] + PEs[k][step_idx]
+        end
 
         #= PLOTTING =#
-        if N_steps == 1 || mod(N_steps, N_steps_save) == 0
-            fig_idx += 1
-            fig1 = figure(fig_idx) # phase space
-            (ax1, ax2) = fig1.subplots(nrows = 2, ncols = 1)
-            ax1.set_xlabel("Particle Position, m")
-            ax1.set_ylabel("Particle Velocity, m/s")
-            ax2.set_xlabel("Particle Position, m")
-            ax2.set_ylabel("Particle Velocity, m/s")
-            # fig2 = figure(1) # velocity distribution
-            # ax2 = fig2.subplots()
-            fig3 = figure(fig_idx + 2) # grid potential, field
-            (ax3, ax4) = fig3.subplots(nrows = 2, ncols = 1)
-            ax3.set_xlabel("Node Position, m")
-            ax3.set_ylabel("Node Potential, V")
-            ax4.set_xlabel("Node Position, m")
-            ax4.set_ylabel("Node Electric Field, V/m")
-            # Plot phase space representation of particles
-            ax1.scatter(particle_list[1].xs * dx, particle_list[1].vs * dx/dt)
-            ax2.scatter(particle_list[2].xs * dx, particle_list[2].vs * dx/dt)
-            # Plot grid potential & field
-            node_Xs = [node.X * dx for node in node_list]
-            node_phis = [node.phi * kce/dx for node in node_list]
-            node_Es = [node.E * kce/dx^2 for node in node_list]
-            ax3.scatter(node_Xs, node_phis)
-            ax4.scatter(node_Xs, node_Es)
-        end
+        # if step_idx == 1 || mod(step_idx, N_steps_save) == 0
+        #     fig_idx += 1
+        #     fig1 = figure(fig_idx) # phase space
+        #     (ax1, ax2) = fig1.subplots(nrows = 2, ncols = 1)
+        #     ax1.set_xlabel("Particle Position, m")
+        #     ax1.set_ylabel("Particle Velocity, m/s")
+        #     ax2.set_xlabel("Particle Position, m")
+        #     ax2.set_ylabel("Particle Velocity, m/s")
+        #     # fig2 = figure(1) # velocity distribution
+        #     # ax2 = fig2.subplots()
+        #     fig3 = figure(fig_idx + 2) # grid potential, field
+        #     (ax3, ax4) = fig3.subplots(nrows = 2, ncols = 1)
+        #     ax3.set_xlabel("Node Position, m")
+        #     ax3.set_ylabel("Node Potential, V")
+        #     ax4.set_xlabel("Node Position, m")
+        #     ax4.set_ylabel("Node Electric Field, V/m")
+        #     # Plot phase space representation of particles
+        #     ax1.scatter(particle_list[1].xs * dx, particle_list[1].vs * dx/dt)
+        #     ax2.scatter(particle_list[2].xs * dx, particle_list[2].vs * dx/dt)
+        #     # Plot grid potential & field
+        #     node_Xs = [node.X * dx for node in node_list]
+        #     node_phis = [node.phi * kce/dx for node in node_list]
+        #     node_Es = [node.E * kce/dx^2 for node in node_list]
+        #     ax3.scatter(node_Xs, node_phis)
+        #     ax4.scatter(node_Xs, node_Es)
+        # end
     end
+
+    fig1 = figure(0)
+    fig2 = figure(1)
+    (ax1, ax2) = fig1.subplots(nrows = 2, ncols = 1)
+    (ax3, ax4) = fig2.subplots(nrows = 2, ncols = 1)
+    ax1.set_title(particle_list[1].name)
+    ax2.set_title(particle_list[2].name)
+    ax3.set_title(particle_list[1].name)
+    ax4.set_title(particle_list[2].name)
+    ax1.plot(KEs[1],
+        color = (0.6,0.6,0.6), 
+        linestyle = ":", 
+        label = "Kinetic Energy")
+    ax2.plot(KEs[2],
+        color = (0.6,0.6,0.6), 
+        linestyle = ":", 
+        label = "Kinetic Energy")
+    ax1.plot(PEs[1],
+        color = (0.3,0.3,0.3), 
+        linestyle = "-.", 
+        label = "Potential Energy")
+    ax2.plot(PEs[2],
+        color = (0.3,0.3,0.3), 
+        linestyle = "-.", 
+        label = "Potential Energy")
+    ax3.plot(TEs[1],
+        color = (0,0,0), 
+        linestyle = "-", 
+        label = "Total Energy")
+    ax4.plot(TEs[2],
+        color = (0,0,0), 
+        linestyle = "-", 
+        label = "Total Energy")
+    ax1.legend()
+    ax2.legend()
+    ax3.legend()
+    ax4.legend()
 end
