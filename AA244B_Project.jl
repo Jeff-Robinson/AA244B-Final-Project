@@ -53,9 +53,13 @@ function make_particles(names, NPs, qs, ms)
     return particle_list
 end
 
-function make_nodes(L_sys, N_nodes)
-    dx = L_sys/(N_nodes-1)
+function make_nodes(L_sys, N_nodes, BC)
     node_list = Array{PIC_grid_node, 1}()
+    if BC == "zero" || BC == "sheath"
+        dx = L_sys/(N_nodes-1)
+    elseif BC == "periodic"
+        dx = L_sys/N_nodes
+    end
     for i in 0:N_nodes-1
         node = PIC_grid_node(
             i, # X
@@ -93,7 +97,7 @@ function update_node_charge!(particle_list, node_list, BC)
     elseif BC == "sheath"
         for particle_spec in particle_list
             for i = 1:length(particle_spec.xs)
-                if particle_spec.xs[i] <= node_list[1].X
+                if particle_spec.xs[i] <= 0
                     node_list[1].charge += particle_spec.q
                 elseif particle_spec.xs[i] >= node_list[end].X
                     node_list[end].charge += particle_spec.q
@@ -111,8 +115,7 @@ function update_node_charge!(particle_list, node_list, BC)
     elseif BC == "periodic"
         for particle_spec in particle_list
             for i = 1:length(particle_spec.xs)
-                # node_idx_lo = mod(floor(Int64, particle_spec.xs[i]), N_nodes)+1
-                node_idx_lo = floor(Int64, particle_spec.xs[i]) + 1
+                node_idx_lo = mod(floor(Int64, particle_spec.xs[i]), N_nodes)+1
                 # node_idx_hi = mod(ceil(Int64, particle_spec.xs[i])+1, N_nodes)
                 node_idx_hi = mod(node_idx_lo, N_nodes)+1
 
@@ -138,7 +141,7 @@ function update_node_phi!(particle_list, node_list, dx, BC)
     elseif BC == "periodic"
         A = Symmetric(A)
     end
-    node_rhos = [-node.charge * dx for node in node_list]
+    node_rhos = [-node.charge/2 for node in node_list]
     node_phis = A \ node_rhos
     for i = 1:N_nodes
         node_list[i].phi = node_phis[i]
@@ -198,8 +201,7 @@ function update_particle_Es!(particle_list, node_list, BC)
     elseif BC == "periodic"
         for particle_spec in particle_list
             for i = 1:length(particle_spec.xs)
-                # node_idx_lo = mod(floor(Int64, particle_spec.xs[i]), N_nodes)+1
-                node_idx_lo = floor(Int64, particle_spec.xs[i]) + 1
+                node_idx_lo = mod(floor(Int64, particle_spec.xs[i]), N_nodes)+1
                 # node_idx_hi = mod(ceil(Int64, particle_spec.xs[i]), N_nodes)+1
                 node_idx_hi = mod(node_idx_lo, N_nodes)+1
                 
@@ -270,10 +272,11 @@ function init_PIC(;
     N_nodes = round(Int64, maximum(NPs)/10) # 10 particles per cell
     N_real_per_macro = n ./ NPs * L_sys
     qs = [-1, 1] .* N_real_per_macro
+    # ms = [1, mpme] .* N_real_per_macro
     ms = [1, mpme] .* N_real_per_macro
 
     particle_list = make_particles(names, NPs, qs, ms)
-    node_list, dx = make_nodes(L_sys, N_nodes)
+    node_list, dx = make_nodes(L_sys, N_nodes, BC)
     N_species = length(names)
     for k = 1:N_species
         particle_list[k].xs = rand(Uniform(0, node_list[end].X + 1), NPs[k])
