@@ -1,7 +1,6 @@
 #= 
 AA244B Project - 1D PIC Code
 Jeff Robinson - jbrobin@stanford.edu
-
 =#
 
 using PyPlot
@@ -86,8 +85,8 @@ function update_node_charge!(particle_list, node_list, BC)
                 # node_idx_hi =  ceil(Int64, particle_spec.xs[i]) + 1
                 # node_idx_hi = node_idx_lo + 1
 
-                node_list[node_idx_lo].charge += particle_spec.q*abs(node_list[node_idx_lo + 1].X - particle_spec.xs[i])
-                node_list[node_idx_lo + 1].charge += particle_spec.q*abs(particle_spec.xs[i] - node_list[node_idx_lo].X)
+                node_list[node_idx_lo].charge += particle_spec.q*(node_list[node_idx_lo + 1].X - particle_spec.xs[i])
+                node_list[node_idx_lo + 1].charge += particle_spec.q*(particle_spec.xs[i] - node_list[node_idx_lo].X)
             end
         end
 
@@ -132,7 +131,6 @@ end
 function update_node_E!(node_list, BC)
     N_nodes = length(node_list)
 
-    #= CODE WITH FEWER MEMORY ALLOCATIONS =#
     if BC == "zero"
         node_list[1].E = -node_list[2].phi/2
         for i = 2:N_nodes-1
@@ -155,7 +153,6 @@ end
 function update_particle_Es!(particle_list, node_list, BC)
     N_nodes = length(node_list)
     
-    #= CODE WITH FEWER MEMORY ALLOCATIONS =#
     if BC == "zero"
         for particle_spec in particle_list
             for i = 1:length(particle_spec.xs)
@@ -167,9 +164,9 @@ function update_particle_Es!(particle_list, node_list, BC)
                 node_idx_lo = floor(Int64, particle_spec.xs[i]) + 1
                 # node_idx_hi =  ceil(Int64, particle_spec.xs[i]) + 1
                 
-                particle_spec.Es[i] = abs(node_list[node_idx_lo + 1].X - particle_spec.xs[i]) * node_list[node_idx_lo].E + abs(particle_spec.xs[i] - node_list[node_idx_lo].X) * node_list[node_idx_lo + 1].E
+                particle_spec.Es[i] = (node_list[node_idx_lo + 1].X - particle_spec.xs[i]) * node_list[node_idx_lo].E + (particle_spec.xs[i] - node_list[node_idx_lo].X) * node_list[node_idx_lo + 1].E
 
-                particle_spec.phis[i] = abs(node_list[node_idx_lo + 1].X - particle_spec.xs[i]) * node_list[node_idx_lo].phi + abs(particle_spec.xs[i] - node_list[node_idx_lo].X) * node_list[node_idx_lo + 1].phi
+                particle_spec.phis[i] = (node_list[node_idx_lo + 1].X - particle_spec.xs[i]) * node_list[node_idx_lo].phi + (particle_spec.xs[i] - node_list[node_idx_lo].X) * node_list[node_idx_lo + 1].phi
             end
         end
 
@@ -181,10 +178,8 @@ function update_particle_Es!(particle_list, node_list, BC)
                 # node_idx_hi = mod(ceil(Int64, particle_spec.xs[i]), N_nodes)+1
                 node_idx_hi = mod(node_idx_lo, N_nodes)+1
                 
-                # particle_spec.Es[i] = abs(node_list[node_idx_hi].X - particle_spec.xs[i]) * node_list[node_idx_lo].E + abs(particle_spec.xs[i] - node_list[node_idx_lo].X) * node_list[node_idx_hi].E
                 particle_spec.Es[i] = (node_idx_lo - particle_spec.xs[i]) * node_list[node_idx_lo].E + (particle_spec.xs[i] - node_idx_lo-1) * node_list[node_idx_hi].E
 
-                # particle_spec.phis[i] = (node_list[node_idx_hi].X - particle_spec.xs[i]) * node_list[node_idx_lo].phi + (particle_spec.xs[i] - node_list[node_idx_lo].X) * node_list[node_idx_hi].phi
                 particle_spec.phis[i] = (node_idx_lo - particle_spec.xs[i]) * node_list[node_idx_lo].phi + (particle_spec.xs[i] - node_idx_lo-1) * node_list[node_idx_hi].phi
             end
         end
@@ -247,7 +242,7 @@ function init_PIC(;
     drifts = [10.0, 10.0]
     )
 
-    N_nodes = round(Int64, maximum(NPs)/10) + 1 # 10 particles per cell
+    N_nodes = round(Int64, maximum(NPs)/10) # 10 particles per cell
     N_real_per_macro = n ./ NPs * L_sys
     qs = [-1, 1] .* N_real_per_macro
     ms = [1, mpme] .* N_real_per_macro
@@ -276,7 +271,12 @@ function init_PIC(;
     return particle_list, node_list, dx, dt
 end
 
-function run_PIC(;BC = "periodic", N_steps_max = 10000, N_steps_save = 100, plotting = false)
+function run_PIC(;
+    BC = "periodic", 
+    N_steps_max = 10000, 
+    N_steps_save = 100, 
+    plotting = false
+    )
     particle_list, node_list, dx, dt = init_PIC(BC = BC)
     N_species = length(particle_list)
     N_nodes = length(node_list)
@@ -295,7 +295,7 @@ function run_PIC(;BC = "periodic", N_steps_max = 10000, N_steps_save = 100, plot
         moving_avg_v_log = [zeros(length(particle_list[i].xs)) for i=1:N_species]
         moving_avg_phi_log = zeros(N_nodes)
         moving_avg_E_log = zeros(N_nodes)
-        N_steps_avg = N_steps_save/2
+        N_steps_avg = N_steps_save/10
     end
 
     step_idx = 0
@@ -329,10 +329,8 @@ function run_PIC(;BC = "periodic", N_steps_max = 10000, N_steps_save = 100, plot
         for k in 1:N_species
             #= Kinetic Energy m*Vold*Vnew/2 =#
             KE_spec[k][step_idx] = sum(0.5 * dx/dt * dx/dt * me * particle_list[k].vs .* particle_list[k].vs_old * particle_list[k].m)
-            
             #= Potential Energy qΦ =#
             PE_spec[k][step_idx] = sum(particle_list[k].phis * e/(eps0*dx) * particle_list[k].q * e)
-
             #= Total Energy =#
             TE_spec[k][step_idx] = KE_spec[k][step_idx] + PE_spec[k][step_idx]
 
@@ -413,14 +411,17 @@ function run_PIC(;BC = "periodic", N_steps_max = 10000, N_steps_save = 100, plot
     ax1.set_title("Kinetic Energy, J")
     ax2.set_title("Potential Energy, J")
     ax3.set_title("Total Energy, J")
+    ax3.set_xlabel("Time, s")
     fig2.suptitle("Proton Energy Conservation",fontsize=14,fontweight="bold")
     ax4.set_title("Kinetic Energy, J")
     ax5.set_title("Potential Energy, J")
     ax6.set_title("Total Energy, J")
+    ax6.set_xlabel("Time, s")
     fig3.suptitle("Total Energy Conservation",fontsize=14,fontweight="bold")
     ax7.set_title("Kinetic Energy, J")
     ax8.set_title("Electric Potential Energy, J")
     ax9.set_title("Total Energy, J")
+    ax9.set_xlabel("Time, s")
     ax1.plot(times, KE_spec[1],
         color = (0,0,0), 
         linestyle = "-", 
@@ -464,11 +465,11 @@ function run_PIC(;BC = "periodic", N_steps_max = 10000, N_steps_save = 100, plot
     end
 
     println("\nMax Kinetic Energy Error: ", 
-            max(maximum(KEs)-KEs[1], KEs[1]-minimum(KEs))/KEs[1]*100, " %",
+            max(maximum(KEs)-KEs[1], KEs[1]-minimum(KEs))/KEs[1]*100," %",
             "\nMax Potential Energy Error: ", 
-            max(maximum(PEs)-PEs[1], PEs[1]-minimum(PEs))/PEs[1]*100, " %",
+            max(maximum(PEs)-PEs[1], PEs[1]-minimum(PEs))/PEs[1]*100," %",
             "\nMax Total Energy Error: ", 
-            max(maximum(TEs)-TEs[1], TEs[1]-minimum(TEs))/TEs[1]*100, " %",
+            max(maximum(TEs)-TEs[1], TEs[1]-minimum(TEs))/TEs[1]*100," %",
             "\nRMS Total Energy Error: ", 
             sum(((TEs.-TEs[1])/TEs[1]*100).^2/N_steps_max), " %\n"
             )
