@@ -90,6 +90,24 @@ function update_node_charge!(particle_list, node_list, BC)
             end
         end
 
+    elseif BC == "sheath"
+        for particle_spec in particle_list
+            for i = 1:length(particle_spec.xs)
+                if particle_spec.xs[i] <= node_list[1].X
+                    node_list[1].charge += particle_spec.q
+                elseif particle_spec.xs[i] >= node_list[end].X
+                    node_list[end].charge += particle_spec.q
+                else
+                    node_idx_lo = floor(Int64, particle_spec.xs[i]) + 1
+                    # node_idx_hi =  ceil(Int64, particle_spec.xs[i]) + 1
+                    # node_idx_hi = node_idx_lo + 1
+
+                    node_list[node_idx_lo].charge += particle_spec.q*(node_list[node_idx_lo + 1].X - particle_spec.xs[i])
+                    node_list[node_idx_lo + 1].charge += particle_spec.q*(particle_spec.xs[i] - node_list[node_idx_lo].X)
+                end
+            end
+        end
+
     elseif BC == "periodic"
         for particle_spec in particle_list
             for i = 1:length(particle_spec.xs)
@@ -132,11 +150,18 @@ function update_node_E!(node_list, BC)
     N_nodes = length(node_list)
 
     if BC == "zero"
-        node_list[1].E = -node_list[2].phi/2
+        node_list[1].E = node_list[1].phi - node_list[2].phi
         for i = 2:N_nodes-1
             node_list[i].E = (node_list[i-1].phi - node_list[i+1].phi)/2
         end
-        node_list[N_nodes].E = node_list[N_nodes-1].phi/2
+        node_list[N_nodes].E = node_list[N_nodes-1].phi - node_list[N_nodes].phi
+        
+    elseif BC == "sheath"
+        node_list[1].E = node_list[1].phi - node_list[2].phi
+        for i = 2:N_nodes-1
+            node_list[i].E = (node_list[i-1].phi - node_list[i+1].phi)/2
+        end
+        node_list[N_nodes].E = node_list[N_nodes-1].phi - node_list[N_nodes].phi
 
     elseif BC == "periodic"
         node_list[1].E = (node_list[end].phi - node_list[2].phi)/2
@@ -153,7 +178,7 @@ end
 function update_particle_Es!(particle_list, node_list, BC)
     N_nodes = length(node_list)
     
-    if BC == "zero"
+    if BC == "zero" || BC == "sheath"
         for particle_spec in particle_list
             for i = 1:length(particle_spec.xs)
                 if particle_spec.xs[i]<0 || particle_spec.xs[i]>node_list[end].X
@@ -231,15 +256,15 @@ end
 function init_PIC(;
     names = ["electrons", "protons"], 
     n = [10^8, 10^8],
-    NPs = [1000, 1000], 
+    NPs = [5000, 5000], 
     L_sys = 0.5, # m
-    dt = 1e-9, # s
+    dt = 1e-8, # s
     BC,
     temps = [0.005, 0.005], # eV
     # temps = [1.0, 0.005],
     # temps = [1.0, 1.0],
-    # drifts = [0.0, 0.0] # m/s
-    drifts = [10.0, 10.0]
+    drifts = [0.0, 0.0] # m/s
+    # drifts = [10.0, 10.0]
     )
 
     N_nodes = round(Int64, maximum(NPs)/10) # 10 particles per cell
@@ -252,31 +277,38 @@ function init_PIC(;
     N_species = length(names)
     for k = 1:N_species
         particle_list[k].xs = rand(Uniform(0, node_list[end].X + 1), NPs[k])
-        particle_list[k].vs = (rand(Normal(0, sqrt(temps[k]*e/me)), NPs[k]) .+ drifts[k]) * dt/dx
+        particle_list[k].vs = (rand(Normal(0, sqrt(temps[k]*e / (me*particle_list[k].m/N_real_per_macro[k])) ), NPs[k]) .+ drifts[k]) * dt/dx
     end
     init_particle_vs!(particle_list, node_list, BC, dx, dt)
 
-    println("Particle types: ", names, 
-    "\nTemperatures: ", temps, " eV",
-    "\nNumber of macroparticles: ", NPs, 
-    "\nNumber Density n: ", n,
-    "\nNumber of real particles per macroparticle: ", N_real_per_macro, 
-    "\nNode Count: ", N_nodes, 
-    "\nSystem size: ", L_sys, " m",
-    "\ndx: ", dx, " m",
-    "\nDebye Length: ", sqrt(eps0*temps[1]/(n[1]*e)), " m",
-    "\ndx per Debye Length: ", sqrt(eps0*temps[1]/(n[1]*e))/dx,
-    "\nNumber of time steps per plasma oscillation: ", 1/(dt*sqrt(n[1]*e^2/(eps0*me)))
-    )
+    println(
+            "Particle types: ", names, 
+            "\nTemperatures: ", temps, " eV",
+            "\nNumber of macroparticles: ", NPs, 
+            "\nNumber Density n: ", n,
+            "\nNumber of real particles per macroparticle: ", N_real_per_macro, 
+            "\nNode Count: ", N_nodes, 
+            "\nSystem size: ", L_sys, " m",
+            "\ndx: ", dx, " m",
+            "\nReal Debye Length: ", sqrt(eps0*temps[1]/(n[1]*e)), " m",
+            "\ndx per Real Debye Length: ", sqrt(eps0*temps[1]/(n[1]*e))/dx,
+            "\nMacro Debye Length: ", sqrt(eps0*temps[1]/(length(particle_list[1].xs)/L_sys*e*abs(particle_list[1].q))), " m",
+            "\nReal Plasma Frequency: ", sqrt(n[1]*e^2/(eps0*me)),
+            "\nMacro Plasma Frequency: ", sqrt(length(particle_list[1].xs)/L_sys*(e*particle_list[1].q)^2/(eps0*me*particle_list[1].m)),
+            "\nNumber of time steps per real plasma oscillation: ", 1/(dt*sqrt(n[1]*e^2/(eps0*me)))
+            )
     return particle_list, node_list, dx, dt
 end
 
 function run_PIC(;
     BC = "periodic", 
+    # BC = "zero",
+    # BC = "sheath",
     N_steps_max = 10000, 
     N_steps_save = 100, 
     plotting = false
     )
+
     particle_list, node_list, dx, dt = init_PIC(BC = BC)
     N_species = length(particle_list)
     N_nodes = length(node_list)
@@ -288,6 +320,7 @@ function run_PIC(;
     KEs = Array{Float64, 1}(undef, N_steps_max)
     PEs = Array{Float64, 1}(undef, N_steps_max)
     TEs = Array{Float64, 1}(undef, N_steps_max)
+    # PE_alt = Array{Float64, 1}(undef, N_steps_max) # from grid nodes
 
     #= MOVING AVERAGES FOR PLOTTING =#
     if plotting == true
@@ -310,7 +343,7 @@ function run_PIC(;
         update_particle_xs!(particle_list, node_list, BC)
 
         step_idx += 1
-        if mod(step_idx, round(min(N_steps_max/10, 1000))) == 0 # TRACK PROGRESS
+        if mod(step_idx, round(min(N_steps_max/10, 100))) == 0 # TRACK PROGRESS
             print("\e[2K")
             print("\e[1G")
             print(step_idx," / ",N_steps_max)
@@ -343,6 +376,7 @@ function run_PIC(;
         KEs[step_idx] = sum([KE_spec[i][step_idx] for i=1:N_species])
         PEs[step_idx] = sum([PE_spec[i][step_idx] for i=1:N_species])
         TEs[step_idx] = sum([TE_spec[i][step_idx] for i=1:N_species])
+        # PE_alt[step_idx] = sum([node.phi * e/(eps0*dx) * node.charge * e for node in node_list])
 
         #= PLOTTING =#
         if plotting == true
@@ -353,6 +387,8 @@ function run_PIC(;
                 # ax1.set_xlabel("Particle Position, m")
                 ax1.set_ylabel("Particle Velocity, m/s", fontsize=8)
                 ax2.set_xlabel("Particle Position, m", fontsize=8)
+                ax1.set_xlim((node_list[1].X*dx, (node_list[end].X+1)*dx))
+                ax2.set_xlim((node_list[1].X*dx, (node_list[end].X+1)*dx))
                 ax2.set_ylabel("Particle Velocity, m/s", fontsize=8)
                 # ax3.set_xlabel("Node Position, m")
                 ax3.set_ylabel("Node Potential, V", fontsize=8)
@@ -452,6 +488,9 @@ function run_PIC(;
     ax8.plot(times, PEs,
         color = (0,0,0), 
         linestyle = "-")
+    # ax8.plot(times, PE_alt,
+    #     color = (0.5,0.5,0.5), 
+    #     linestyle = "-")
     ax9.plot(times, TEs,
         color = (0,0,0), 
         linestyle = "-")
@@ -464,14 +503,14 @@ function run_PIC(;
         fig3.savefig("PIC Output/_Total Energy Conservation.png", dpi=100)
     end
 
-    println("\nMax Kinetic Energy Error: ", 
-            max(maximum(KEs)-KEs[1], KEs[1]-minimum(KEs))/KEs[1]*100," %",
-            "\nMax Potential Energy Error: ", 
-            max(maximum(PEs)-PEs[1], PEs[1]-minimum(PEs))/PEs[1]*100," %",
+    println(#"\nMax Kinetic Energy Error: ", 
+            #max(maximum(KEs)-KEs[1], KEs[1]-minimum(KEs))/KEs[1]*100," %",
+            #"\nMax Potential Energy Error: ", 
+            #max(maximum(PEs)-PEs[1], PEs[1]-minimum(PEs))/PEs[1]*100," %",
             "\nMax Total Energy Error: ", 
             max(maximum(TEs)-TEs[1], TEs[1]-minimum(TEs))/TEs[1]*100," %",
             "\nRMS Total Energy Error: ", 
-            sum(((TEs.-TEs[1])/TEs[1]*100).^2/N_steps_max), " %\n"
+            sum(((TEs.-TEs[1])/TEs[1]).^2/N_steps_max)*100, " %\n"
             )
 
     return KE_spec, PE_spec, TE_spec, KEs, PEs, TEs
