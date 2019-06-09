@@ -243,23 +243,12 @@ function init_PIC(;
     temps = [0.005, 0.005], # eV
     # temps = [1.0, 0.005],
     # temps = [1.0, 1.0],
-    drifts = [0.0, 0.0] # m/s
-    # drifts = [10.0, 10.0]
+    # drifts = [0.0, 0.0] # m/s
+    drifts = [10.0, 10.0]
     )
 
     N_nodes = round(Int64, maximum(NPs)/10) + 1 # 10 particles per cell
     N_real_per_macro = n ./ NPs * L_sys
-
-    println("Particle types: ", names, 
-    "\nTemperatures: ", temps, " eV",
-    "\nNumber of macroparticles: ", NPs, 
-    "\nSystem size: ", L_sys, " m",
-    "\nDebye Length: ", sqrt(eps0*temps[1]/(n[1]*e)), " m",
-    "\nNode Count: ", N_nodes, 
-    "\nNumber of real particles per macroparticle: ", N_real_per_macro, 
-    "\nNumber of time steps per plasma oscillation: ", 1/(dt*sqrt(n[1]*e^2/(eps0*me))) 
-    )
-
     qs = [-1, 1] .* N_real_per_macro
     ms = [1, mpme] .* N_real_per_macro
 
@@ -271,13 +260,28 @@ function init_PIC(;
         particle_list[k].vs = (rand(Normal(0, sqrt(temps[k]*e/me)), NPs[k]) .+ drifts[k]) * dt/dx
     end
     init_particle_vs!(particle_list, node_list, BC, dx, dt)
+
+    println("Particle types: ", names, 
+    "\nTemperatures: ", temps, " eV",
+    "\nNumber of macroparticles: ", NPs, 
+    "\nNumber Density n: ", n,
+    "\nNumber of real particles per macroparticle: ", N_real_per_macro, 
+    "\nNode Count: ", N_nodes, 
+    "\nSystem size: ", L_sys, " m",
+    "\ndx: ", dx, " m",
+    "\nDebye Length: ", sqrt(eps0*temps[1]/(n[1]*e)), " m",
+    "\ndx per Debye Length: ", sqrt(eps0*temps[1]/(n[1]*e))/dx,
+    "\nNumber of time steps per plasma oscillation: ", 1/(dt*sqrt(n[1]*e^2/(eps0*me)))
+    )
     return particle_list, node_list, dx, dt
 end
 
-function run_PIC(BC = "periodic", N_steps_max = 10000, N_steps_save = 100)
+function run_PIC(;BC = "periodic", N_steps_max = 10000, N_steps_save = 100, plotting = false)
     particle_list, node_list, dx, dt = init_PIC(BC = BC)
     N_species = length(particle_list)
+    N_nodes = length(node_list)
 
+    #= ENERGY CONSERVATION TRACKING =#
     KE_spec = [Array{Float64, 1}(undef, N_steps_max) for i=1:N_species]
     PE_spec = [Array{Float64, 1}(undef, N_steps_max) for i=1:N_species]
     TE_spec = [Array{Float64, 1}(undef, N_steps_max) for i=1:N_species]
@@ -285,8 +289,17 @@ function run_PIC(BC = "periodic", N_steps_max = 10000, N_steps_save = 100)
     PEs = Array{Float64, 1}(undef, N_steps_max)
     TEs = Array{Float64, 1}(undef, N_steps_max)
 
+    #= MOVING AVERAGES FOR PLOTTING =#
+    if plotting == true
+        moving_avg_x_log = [zeros(length(particle_list[i].xs)) for i=1:N_species]
+        moving_avg_v_log = [zeros(length(particle_list[i].xs)) for i=1:N_species]
+        moving_avg_phi_log = zeros(N_nodes)
+        moving_avg_E_log = zeros(N_nodes)
+        N_steps_avg = N_steps_save/2
+    end
+
     step_idx = 0
-    fig_idx = 3
+    fig_idx = 0
     println("Progress:")
     while step_idx < N_steps_max
         update_node_charge!(particle_list, node_list, BC)
@@ -297,8 +310,19 @@ function run_PIC(BC = "periodic", N_steps_max = 10000, N_steps_save = 100)
         update_particle_xs!(particle_list, node_list, BC)
 
         step_idx += 1
-        if mod(step_idx, round(N_steps_max/10)) == 0 # TRACK PROGRESS
-            println(step_idx," / ",N_steps_max)
+        if mod(step_idx, round(min(N_steps_max/10, 1000))) == 0 # TRACK PROGRESS
+            print("\e[2K")
+            print("\e[1G")
+            print(step_idx," / ",N_steps_max)
+            if step_idx == N_steps_max
+                print("\n")
+            end
+        end
+
+        #= MOVING AVERAGES FOR PLOTTING =#
+        if plotting == true && mod(step_idx, N_steps_save) >= N_steps_save-N_steps_avg
+            moving_avg_phi_log .+= [node.phi * e/(eps0*dx) for node in node_list]
+            moving_avg_E_log .+= [node.E * e/(eps0*dx^2) for node in node_list]
         end
 
         #= ENERGY CONSERVATION TRACKING =#
@@ -311,57 +335,89 @@ function run_PIC(BC = "periodic", N_steps_max = 10000, N_steps_save = 100)
 
             #= Total Energy =#
             TE_spec[k][step_idx] = KE_spec[k][step_idx] + PE_spec[k][step_idx]
+
+            #= MOVING AVERAGES FOR PLOTTING =#
+            if plotting == true && mod(step_idx, N_steps_save) >= N_steps_save-N_steps_avg
+                moving_avg_x_log[k] .+= particle_list[k].xs * dx
+                moving_avg_v_log[k] .+= particle_list[k].vs * dx/dt
+            end
         end
         KEs[step_idx] = sum([KE_spec[i][step_idx] for i=1:N_species])
         PEs[step_idx] = sum([PE_spec[i][step_idx] for i=1:N_species])
         TEs[step_idx] = sum([TE_spec[i][step_idx] for i=1:N_species])
 
         #= PLOTTING =#
-        if step_idx == 1 || mod(step_idx, N_steps_save) == 0
-            fig_idx += 1
-            fig1 = figure(fig_idx) # phase space
-            (ax1, ax2, ax3, ax4) = fig1.subplots(nrows = 2, ncols = 2)
-            ax1.set_xlabel("Particle Position, m")
-            ax1.set_ylabel("Particle Velocity, m/s")
-            ax2.set_xlabel("Particle Position, m")
-            ax2.set_ylabel("Particle Velocity, m/s")
-            # fig3 = figure(fig_idx + 2) # grid potential, field
-            # (ax3, ax4) = fig3.subplots(nrows = 2, ncols = 1)
-            ax3.set_xlabel("Node Position, m")
-            ax3.set_ylabel("Node Potential, V")
-            ax4.set_xlabel("Node Position, m")
-            ax4.set_ylabel("Node Electric Field, V/m")
-            # Plot phase space representation of particles
-            ax1.scatter(particle_list[1].xs * dx, particle_list[1].vs * dx/dt)
-            ax2.scatter(particle_list[2].xs * dx, particle_list[2].vs * dx/dt)
-            # Plot grid potential & field
-            node_Xs = [node.X * dx for node in node_list]
-            node_phis = [node.phi * e/(eps0*dx) for node in node_list]
-            node_Es = [node.E * e/(eps0*dx^2) for node in node_list]
-            ax3.plot(node_Xs, node_phis)
-            ax4.plot(node_Xs, node_Es)
-            fig1.savefig("PIC Output/fig_$(fig_idx).png", dpi=300)
-            close(fig1)
+        if plotting == true
+            if step_idx == 1 || mod(step_idx, N_steps_save) == 0
+                fig_idx += 1
+                fig1 = figure(fig_idx) # phase space
+                (ax1, ax2, ax3, ax4) = fig1.subplots(nrows = 2, ncols = 2)
+                # ax1.set_xlabel("Particle Position, m")
+                ax1.set_ylabel("Particle Velocity, m/s", fontsize=8)
+                ax2.set_xlabel("Particle Position, m", fontsize=8)
+                ax2.set_ylabel("Particle Velocity, m/s", fontsize=8)
+                # ax3.set_xlabel("Node Position, m")
+                ax3.set_ylabel("Node Potential, V", fontsize=8)
+                ax4.set_xlabel("Node Position, m", fontsize=8)
+                ax4.set_ylabel("Node Electric Field, V/m", fontsize=8)
+                # Plot phase space representation of particles
+                if step_idx == 1
+                    ax1.scatter(particle_list[1].xs * dx, 
+                                particle_list[1].vs * dx/dt)
+                    ax2.scatter(particle_list[2].xs * dx, 
+                                particle_list[2].vs * dx/dt)
+                else
+                    moving_avg_x_log /= N_steps_avg
+                    moving_avg_v_log /= N_steps_avg
+                    ax1.scatter(moving_avg_x_log[1], moving_avg_v_log[1])
+                    ax2.scatter(moving_avg_x_log[2], moving_avg_v_log[2])
+                end
+                # Plot grid potential & field
+                node_Xs = [node.X * dx for node in node_list]
+                if step_idx == 1
+                    node_phis = [node.phi * e/(eps0*dx) for node in node_list]
+                    node_Es = [node.E * e/(eps0*dx^2) for node in node_list]
+                    ax3.plot(node_Xs, node_phis)
+                    ax4.plot(node_Xs, node_Es)
+                else
+                    moving_avg_phi_log /= N_steps_avg
+                    moving_avg_E_log /= N_steps_avg
+                    ax3.plot(node_Xs, moving_avg_phi_log)
+                    ax4.plot(node_Xs, moving_avg_E_log)
+                end
+                fig1.set_size_inches(10, 8)
+                fig1.tight_layout()
+                fig1.savefig("PIC Output/fig_$(fig_idx).png", dpi=50)
+                close(fig1)
+
+                moving_avg_x_log = [zeros(length(particle_list[i].xs)) for i=1:N_species]
+                moving_avg_v_log = [zeros(length(particle_list[i].xs)) for i=1:N_species]
+                moving_avg_phi_log = zeros(N_nodes)
+                moving_avg_E_log = zeros(N_nodes)
+            end
         end
     end
 
     times = [i*dt for i = 1:N_steps_max]
 
     fig1 = figure(0)
+    fig1.set_size_inches(12, 8)
     fig2 = figure(1)
+    fig2.set_size_inches(12, 8)
     fig3 = figure(2)
+    fig3.set_size_inches(12, 8)
     (ax1, ax2, ax3) = fig1.subplots(nrows = 3, ncols = 1)
     (ax4, ax5, ax6) = fig2.subplots(nrows = 3, ncols = 1)
     (ax7, ax8, ax9) = fig3.subplots(nrows = 3, ncols = 1)
-    fig1.suptitle(particle_list[1].name)
+    fig1.suptitle("Electron Energy Conservation",fontsize=14,fontweight="bold")
     ax1.set_title("Kinetic Energy, J")
     ax2.set_title("Potential Energy, J")
     ax3.set_title("Total Energy, J")
-    fig2.suptitle(particle_list[2].name)
+    fig2.suptitle("Proton Energy Conservation",fontsize=14,fontweight="bold")
     ax4.set_title("Kinetic Energy, J")
     ax5.set_title("Potential Energy, J")
     ax6.set_title("Total Energy, J")
-    fig3.suptitle("All Species")
+    fig3.suptitle("Total Energy Conservation",fontsize=14,fontweight="bold")
     ax7.set_title("Kinetic Energy, J")
     ax8.set_title("Electric Potential Energy, J")
     ax9.set_title("Total Energy, J")
@@ -398,6 +454,24 @@ function run_PIC(BC = "periodic", N_steps_max = 10000, N_steps_save = 100)
     ax9.plot(times, TEs,
         color = (0,0,0), 
         linestyle = "-")
+    fig1.tight_layout(rect=[0, 0, 1, 0.96])
+    fig2.tight_layout(rect=[0, 0, 1, 0.96])
+    fig3.tight_layout(rect=[0, 0, 1, 0.96])
+    if plotting == true
+        fig1.savefig("PIC Output/_Electron Energy Conservation.png", dpi=100)
+        fig2.savefig("PIC Output/_Proton Energy Conservation.png", dpi=100)
+        fig3.savefig("PIC Output/_Total Energy Conservation.png", dpi=100)
+    end
+
+    println("\nMax Kinetic Energy Error: ", 
+            max(maximum(KEs)-KEs[1], KEs[1]-minimum(KEs))/KEs[1]*100, " %",
+            "\nMax Potential Energy Error: ", 
+            max(maximum(PEs)-PEs[1], PEs[1]-minimum(PEs))/PEs[1]*100, " %",
+            "\nMax Total Energy Error: ", 
+            max(maximum(TEs)-TEs[1], TEs[1]-minimum(TEs))/TEs[1]*100, " %",
+            "\nRMS Total Energy Error: ", 
+            sum(((TEs.-TEs[1])/TEs[1]*100).^2/N_steps_max), " %\n"
+            )
 
     return KE_spec, PE_spec, TE_spec, KEs, PEs, TEs
 end
