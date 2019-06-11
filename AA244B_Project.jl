@@ -9,6 +9,7 @@ using LinearAlgebra
 using Random
 using DataFrames
 using GLM
+using FFTW
 
 ## CONSTANTS ##
 kb = 1.3806485279*10^-23 #J/K
@@ -220,7 +221,7 @@ function run_PIC(;
     qs = [-1, 1],
     ms = [1, mpme],
     # ms = [1, 10],
-    temps = [0.005, 0.005], # eV
+    temps = [0.005, 0.00], # eV
     drifts = [0.0, 0.0], # m/s
     n = [10^8, 10^8], #10^8
     NPs = [2000, 2000], 
@@ -232,8 +233,8 @@ function run_PIC(;
     # pos_IC = "uniform_exact",
     pos_IC = "uniform_exact_shuffle",
     # pos_IC = "uniform_rand",
-    N_steps_max = 1000, 
-    N_steps_save = 10, 
+    N_steps_max = 10000, 
+    N_steps_save = 100, 
     plotting = false
     )
 
@@ -248,7 +249,7 @@ function run_PIC(;
     make linear fit of energy and plot for each sim
     SPURIOUS ELECTRIC FIELDS
     =#
-    
+
     N_nodes = round(Int64, maximum(NPs)/10) # 10 particles per cell
     node_list = make_nodes(N_nodes)
 
@@ -315,7 +316,7 @@ function run_PIC(;
           Initial Position Condition: $(pos_IC)
     """
     println(inputs_string)
-    savefile = open("PIC Output/Inputs.txt", "w")
+    savefile = open("PIC Output/_Simulation_Info.txt", "w")
     write(savefile, inputs_string)
 
     #= ENERGY CONSERVATION TRACKING =#
@@ -339,6 +340,10 @@ function run_PIC(;
     # mean, variance, mean error, variance error
     vel_dist_params = [[[] for j = 1:4] for i=1:N_species]
 
+    #= PARTICLE POSITION TRACKING FOR FFT =#
+    particle_pos = [Array{Float64, 1}(undef, N_steps_max) for i=1:NPs[1]]
+    fft_freqs = [i*1/dt/N_steps_max for i = 0:N_steps_max-1]
+
     step_idx = 0
     fig_idx = 3
     println("Progress:")
@@ -358,6 +363,10 @@ function run_PIC(;
             if step_idx == N_steps_max
                 print("\n")
             end
+        end
+
+        for i = 1:NPs[1]
+            particle_pos[i][step_idx] = particle_list[1].xs[i] * dx
         end
 
         #= ENERGY CONSERVATION TRACKING =#
@@ -399,7 +408,9 @@ function run_PIC(;
         if plotting == true || step_idx == 1
             if step_idx == 1 || mod(step_idx, N_steps_save) == 0
                 fig_idx += 1
-                fig1 = figure(fig_idx) # phase space
+                # fig1 = figure(fig_idx)
+                fig1 = figure(0)
+                fig1.clf()
                 (ax1, ax2, ax3, ax4) = fig1.subplots(nrows = 2, ncols = 2)
                 # ax1.set_xlabel("Particle Position, m")
                 ax1.set_ylabel("Particle Velocity, m/s", fontsize=8)
@@ -438,7 +449,7 @@ function run_PIC(;
                 fig1.set_size_inches(10, 8)
                 fig1.tight_layout()
                 fig1.savefig("PIC Output/fig_$(fig_idx-3).png", dpi=50)
-                close(fig1)
+                # close(fig1)
 
                 moving_avg_x_log = [zeros(length(particle_list[i].xs)) for i=1:N_species]
                 moving_avg_v_log = [zeros(length(particle_list[i].xs)) for i=1:N_species]
@@ -458,10 +469,13 @@ function run_PIC(;
 
     #= ENERGY CONSERVATION PLOTS =#
     fig1 = figure(0)
+    fig1.clf()
     fig1.set_size_inches(12, 8)
     fig2 = figure(1)
+    fig2.clf()
     fig2.set_size_inches(12, 8)
     fig3 = figure(2)
+    fig3.clf()
     fig3.set_size_inches(12, 8)
     (ax1, ax2, ax3) = fig1.subplots(nrows = 3, ncols = 1)
     (ax4, ax5, ax6) = fig2.subplots(nrows = 3, ncols = 1)
@@ -526,6 +540,9 @@ function run_PIC(;
     fig1.savefig("PIC Output/Energy Conservation Electrons.png", dpi=100)
     fig2.savefig("PIC Output/Energy Conservation Protons.png", dpi=100)
     fig3.savefig("PIC Output/Energy Conservation Total.png", dpi=100)
+    close(fig1)
+    close(fig2)
+    close(fig3)
 
     max_TE = max(maximum(TEs)-TEs[1], TEs[1]-minimum(TEs))/TEs[1]*100
     RMS_TE = sum(((TEs.-TEs[1])/TEs[1]).^2/N_steps_max)*100
@@ -562,5 +579,10 @@ function run_PIC(;
     write(savefile, diagnostics_string)
     close(savefile)
 
-    return KEs, PEs, TEs, vel_dist_params
+    particle_fft = [Array{Float64, 1}(undef, N_steps_max) for i=1:NPs[1]]
+    for i = 1:NPs[1]
+        particle_fft[i] = abs.(fft(particle_pos[i]))
+    end
+
+    return TEs, particle_fft, fft_freqs
 end
