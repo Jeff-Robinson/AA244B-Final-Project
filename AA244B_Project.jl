@@ -206,7 +206,7 @@ function update_particle_vs!(particle_list, dx, dt)
     for particle_spec in particle_list
         particle_spec.vs_old = particle_spec.vs
         particle_spec.vs .+= particle_spec.q/particle_spec.m*particle_spec.Es*dt
-        # particle_spec.vs .+= (particle_spec.q * e)/(particle_spec.m * me)*(particle_spec.Es * e/(eps0*dx^2)) * dt*dt/dx
+        # particle_spec.vs .+= particle_spec.q/particle_spec.m*particle_spec.Es * e^2/(me*eps0) * dt^2/dx^3
     end
 end
 
@@ -221,50 +221,38 @@ function update_particle_xs!(particle_list, node_list, N_nodes, BC)
 end
 
 #= BIRDSALL & LANGDON 3-10 =#
-function init_particle_vs!(particle_list, node_list, N_nodes, BC, dx, dt)
-    update_node_charge!(particle_list, node_list, N_nodes, BC)
-    update_node_phi!(particle_list, node_list, N_nodes, dx, BC)
-    update_node_E!(node_list, N_nodes, BC)
-    update_particle_Es_phis!(particle_list, node_list, N_nodes, BC)
-    for particle_spec in particle_list
-        particle_spec.vs .+= (-particle_spec.q/2)/particle_spec.m*particle_spec.Es*dt
-        # particle_spec.vs .+= (particle_spec.q * e)/(2*particle_spec.m * me)*(particle_spec.Es * e/(eps0*dx^2)) * dt*dt/dx
-    end
-end
+# function init_particle_vs!(particle_list, node_list, N_nodes, BC, dx, dt)
+#     update_node_charge!(particle_list, node_list, N_nodes, BC)
+#     update_node_phi!(particle_list, node_list, N_nodes, dx, BC)
+#     update_node_E!(node_list, N_nodes, BC)
+#     update_particle_Es_phis!(particle_list, node_list, N_nodes, BC)
+#     for particle_spec in particle_list
+#         particle_spec.vs .+= (-particle_spec.q/2)/particle_spec.m*particle_spec.Es*dt
+#         # particle_spec.vs .+= (particle_spec.q * e)/(2*particle_spec.m * me)*(particle_spec.Es * e/(eps0*dx^2)) * dt*dt/dx
+#     end
+# end
 
 function run_PIC(;
     names = ["electrons", "protons"], 
     qs = [-1, 1],
     ms = [1, mpme],
     # ms = [1, 10],
-    temps = [0.005, 0.001], # eV
+    temps = [0.005, 0.005], # eV
     drifts = [0.0, 0.0], # m/s
     n = [10^8, 10^8], #10^8
-    NPs = [500, 500], 
+    NPs = [1000, 1000], 
     L_sys = 0.5, # m
     dt = 1e-8, # s
     BC = "periodic", 
     # BC = "zero",
     # BC = "sheath",
     # pos_IC = "uniform_exact",
-    # pos_IC = "uniform_exact_shuffle",
-    pos_IC = "uniform_rand",
+    pos_IC = "uniform_exact_1percentshuffle",
+    # pos_IC = "uniform_rand",
     N_steps_max = 1000, 
     N_steps_save = 10, 
     plotting = false
     )
-
-    # particle_list, N_species, node_list, N_nodes, dx, dt = init_PIC(BC = BC)
-    
-    #=
-    ultra low Density (just reduce particle count)
-    ultra high Density
-    induce electric field
-    add charge clumping
-    plot distribution fxn after generation
-    make linear fit of energy and plot for each sim
-    SPURIOUS ELECTRIC FIELDS
-    =#
 
     N_nodes = round(Int64, maximum(NPs)/10) # 10 particles per cell
     node_list = make_nodes(N_nodes)
@@ -284,20 +272,19 @@ function run_PIC(;
     for k = 1:N_species
         if pos_IC == "uniform_rand"
             particle_list[k].xs = rand(Uniform(0, L_sys/dx), NPs[k])
-        elseif pos_IC=="uniform_exact" || pos_IC=="uniform_exact_shuffle"
+        elseif pos_IC=="uniform_exact" || pos_IC=="uniform_exact_1percentshuffle"
             particle_list[k].xs = [L_sys/(NPs[k]*dx)*(i + k/N_species) for i = 0:NPs[k]-1]
-            if pos_IC == "uniform_exact_shuffle"
-                particle_list[k].xs .*= (1 .+.01*(rand(RandomDevice(), NPs[k]).-0.5))
+            if pos_IC == "uniform_exact_1percentshuffle"
+                particle_list[k].xs .+= .01*L_sys/(NPs[k]*dx)*(rand(RandomDevice(), NPs[k]).-0.5)
             end
         end
         particle_list[k].xs = mod.(particle_list[k].xs, N_nodes) # start in domain regardless of boundary
 
         vel_dist_variance[k] = sqrt(temps[k]*e / (me*particle_list[k].m))
         particle_list[k].vs = rand(Normal(drifts[k], vel_dist_variance[k]), NPs[k]) * dt/dx
-
         shuffle!(RandomDevice(), particle_list[k].vs) # eliminate correlations
     end
-    init_particle_vs!(particle_list, node_list, N_nodes, BC, dx, dt)
+    # init_particle_vs!(particle_list, node_list, N_nodes, BC, dx, dt)
 
     #= SIMULATION STATISTICS =#
     debye_real = sqrt(eps0*temps[1]/(n[1]*e))
@@ -307,6 +294,7 @@ function run_PIC(;
 
     inputs_string = 
     """
+    INPUT CONDITIONS
                       Particle types: $(names)
                     Particle charges: $(qs./N_real_per_macro) e
                      Particle masses: $(ms./N_real_per_macro) me
@@ -367,6 +355,9 @@ function run_PIC(;
         update_node_phi!(particle_list, node_list, N_nodes, dx, BC)
         update_node_E!(node_list, N_nodes, BC)
         update_particle_Es_phis!(particle_list, node_list, N_nodes, BC)
+        if step_idx == 0
+            update_particle_vs!(particle_list, dx, -dt/2)
+        end
         update_particle_vs!(particle_list, dx, dt)
         update_particle_xs!(particle_list, node_list, N_nodes, BC)
         step_idx += 1
@@ -375,7 +366,7 @@ function run_PIC(;
             print("\e[1G") # move cursor to first column
             print(step_idx," / ",N_steps_max)
             if step_idx == N_steps_max
-                print("\n")
+                print("\n\n")
             end
         end
 
@@ -464,7 +455,6 @@ function run_PIC(;
                 fig1.set_size_inches(10, 8)
                 fig1.tight_layout()
                 fig1.savefig("PIC Output/fig_$(fig_idx-3).png", dpi=50)
-                # close(fig1)
 
                 moving_avg_x_log = [zeros(length(particle_list[i].xs)) for i=1:N_species]
                 moving_avg_v_log = [zeros(length(particle_list[i].xs)) for i=1:N_species]
@@ -473,6 +463,7 @@ function run_PIC(;
             end
         end
     end
+    close(fig1)
 
     times = [i*dt for i = 1:N_steps_max]
 
@@ -573,22 +564,24 @@ function run_PIC(;
     end
     diagnostics_string = 
     """
-    
     ENERGY CONSERVATION
-    Max Total Energy Error: $(max_TE) %
-    RMS Total Energy Error: $(RMS_TE) %
-    Last Step Total Energy Error: $((TEs[end]-TEs[1])/TEs[1]*100) %
+           Max Total Energy Error: $(max_TE) %
+           RMS Total Energy Error: $(RMS_TE) %
+     Last Step Total Energy Error: $((TEs[end]-TEs[1])/TEs[1]*100) %
     Total Energy Linear Fit Slope: $(TE_coeffs[2]/TEs[1]*100*dt) %/dt
 
-    VELOCITY DISTRIBUTION
-    RMS Mean Error: $(RMS_vel_mu_err*100) %
-    RMS Variance Error: $(RMS_vel_var_err*100) %
-    Mean Mean Error: $(mean_vel_mu_err*100) %
-    Mean Variance Error: $(mean_vel_var_err*100) %
-    First Step Mean Error: $([vel_dist_params[1][3][1]*100, vel_dist_params[2][3][1]*100]) %
-    First Step Variance Error: $([vel_dist_params[1][3][1]*100, vel_dist_params[2][3][1]*100]) %
-    Last Step Mean Error: $([vel_dist_params[1][3][end]*100, vel_dist_params[2][3][end]*100]) %
-    Last Step Variance Error: $([vel_dist_params[1][3][end]*100, vel_dist_params[2][3][end]*100]) %
+    VELOCITY DISTRIBUTION DEVIATION FROM INITIAL
+    MEAN (Initial: $(drifts) m/s) - Statistics relative to initial variance
+           RMS: $(RMS_vel_mu_err*100) %
+          Mean: $(mean_vel_mu_err*100) %
+    First Step: $([vel_dist_params[1][3][1]*100, vel_dist_params[2][3][1]*100]) %
+     Last Step: $([vel_dist_params[1][3][end]*100, vel_dist_params[2][3][end]*100]) %
+    
+    VARIANCE (Initial: $(vel_dist_variance) m/s)
+           RMS: $(RMS_vel_var_err*100) %
+          Mean: $(mean_vel_var_err*100) %
+    First Step: $([vel_dist_params[1][4][1]*100, vel_dist_params[2][4][1]*100]) %
+     Last Step: $([vel_dist_params[1][4][end]*100, vel_dist_params[2][4][end]*100]) %
     """
     println(diagnostics_string)
     write(savefile, diagnostics_string)
@@ -601,3 +594,14 @@ function run_PIC(;
 
     # return TEs
 end
+
+
+#= TO DO
+    ultra low Density (just reduce particle count)
+    ultra high Density
+    induce electric field
+    add charge clumping
+    plot distribution fxn after generation
+    make linear fit of energy and plot for each sim
+    SPURIOUS ELECTRIC FIELDS
+    =#
