@@ -80,8 +80,8 @@ function update_node_charge!(particle_list, node_list, N_nodes, BC)
                 end
                 node_idx_lo = floor(Int64, particle_spec.xs[i]) + 1
 
-                node_list.charges[node_idx_lo] += particle_spec.q*(node_list.Xs[node_idx_lo + 1] - particle_spec.xs[i])
-                node_list.charges[node_idx_lo + 1] += particle_spec.q*(particle_spec.xs[i] - node_list.Xs[node_idx_lo])
+                node_list.charges[node_idx_lo] += particle_spec.q * (node_idx_lo - particle_spec.xs[i])
+                node_list.charges[node_idx_lo + 1] += particle_spec.q * (1 - (node_idx_lo - particle_spec.xs[i]))
             end
         end
 
@@ -90,14 +90,15 @@ function update_node_charge!(particle_list, node_list, N_nodes, BC)
             for i = 1:length(particle_spec.xs)
                 if particle_spec.xs[i] <= 0
                     node_list.charges[1] += particle_spec.q
+                    continue
                 elseif particle_spec.xs[i] >= node_list.Xs[end]
                     node_list.charges[end] += particle_spec.q
-                else
-                    node_idx_lo = floor(Int64, particle_spec.xs[i]) + 1
-
-                    node_list.charges[node_idx_lo] += particle_spec.q*(node_list.Xs[node_idx_lo + 1] - particle_spec.xs[i])
-                    node_list.charges[node_idx_lo + 1] += particle_spec.q*(particle_spec.xs[i] - node_list.Xs[node_idx_lo])
+                    continue
                 end
+                node_idx_lo = floor(Int64, particle_spec.xs[i]) + 1
+
+                node_list.charges[node_idx_lo] += particle_spec.q * (node_idx_lo - particle_spec.xs[i])
+                node_list.charges[node_idx_lo + 1] += particle_spec.q * (1 - (node_idx_lo - particle_spec.xs[i]))
             end
         end
 
@@ -118,18 +119,36 @@ end
 
 #= BIRDSALL & LANGDON EQ 2-5 (5-6) =#
 function update_node_phi!(particle_list, node_list, N_nodes, dx, BC)
-    A = zeros(N_nodes, N_nodes)
-    for i = 1:N_nodes
+    # A = zeros(N_nodes, N_nodes)
+    # if BC == "periodic"
+        # for i = 1:N_nodes
+        #     A[i, i] = -2
+        #     A[mod(i, N_nodes)+1, i] = 1
+        #     A[i, mod(i, N_nodes)+1] = 1
+        # end
+        # A = Symmetric(A) # LinearAlgebra.jl optimization for Symmetric matrices
+        # Symmetric A in this form may cause numerically unstable solution
+        
+    # end
+
+    #= Birdsall & Langdon Appendix D, EQ. (3) & (5) =#
+    max_idx = N_nodes - 2
+    A = zeros(max_idx, max_idx)
+    for i = 1:max_idx
         A[i, i] = -2
-        A[mod(i, N_nodes)+1, i] = 1
-        A[i, mod(i, N_nodes)+1] = 1
+        A[mod(i, max_idx)+1, i] = 1
+        A[i, mod(i, max_idx)+1] = 1
     end
-    if BC == "zero" || BC == "sheath"
-        A = Tridiagonal(A)
-    elseif BC == "periodic"
-        A = Symmetric(A)
+    A = Tridiagonal(A)
+    if BC == "periodic" || BC == "zero"
+        node_list.phis[1], node_list.phis[end] = 0.0, 0.0
+        node_list.phis[2:end-1] = A \ (-node_list.charges[2:end-1]/2)
+    elseif BC == "sheath"
+        node_list.phis[1], node_list.phis[end] = -1.0 * (eps0*dx)/e, -1.0 * (eps0*dx)/e
+        node_list.charges[2] -= node_list.phis[1]
+        node_list.charges[end-1] -= node_list.phis[end]
+        node_list.phis[2:end-1] = A \ (-node_list.charges[2:end-1]/2)
     end
-    node_list.phis = A \ (-node_list.charges/2)
 end
 
 #= BIRDSALL & LANGDON EQ 2-5 (4) =#
@@ -146,7 +165,7 @@ function update_node_E!(node_list, N_nodes, BC)
         M[N_nodes, N_nodes-1] = 1
         M[N_nodes, N_nodes] = -1
     end
-    node_list.Es = M*node_list.phis
+    node_list.Es = M * node_list.phis
 end
 
 #= BIRDSALL & LANGDON EQ 2-6 (3) =#
@@ -161,9 +180,9 @@ function update_particle_Es_phis!(particle_list, node_list, N_nodes, BC)
                 end
                 node_idx_lo = floor(Int64, particle_spec.xs[i]) + 1
                 
-                particle_spec.Es[i] = (node_list.Xs[node_idx_lo + 1] - particle_spec.xs[i]) * node_list.Es[node_idx_lo] + (particle_spec.xs[i] - node_list.Xs[node_idx_lo]) * node_list.Es[node_idx_lo + 1]
+                particle_spec.Es[i] = (node_idx_lo - particle_spec.xs[i]) * node_list.Es[node_idx_lo] + (1 - (node_idx_lo - particle_spec.xs[i])) * node_list.Es[node_idx_lo + 1]
 
-                particle_spec.phis[i] = (node_list.Xs[node_idx_lo + 1] - particle_spec.xs[i]) * node_list.phis[node_idx_lo] + (particle_spec.xs[i] - node_list.Xs[node_idx_lo]) * node_list.phis[node_idx_lo + 1]
+                particle_spec.phis[i] = (node_idx_lo - particle_spec.xs[i]) * node_list.phis[node_idx_lo] + (1 - (node_idx_lo - particle_spec.xs[i])) * node_list.phis[node_idx_lo + 1]
             end
         end
 
@@ -183,25 +202,21 @@ function update_particle_Es_phis!(particle_list, node_list, N_nodes, BC)
 end
 
 #= BIRDSALL & LANGDON EQ 3-5 (3) =#
-function update_particle_vs!(particle_list, dt)
+function update_particle_vs!(particle_list, dx, dt)
     for particle_spec in particle_list
         particle_spec.vs_old = particle_spec.vs
         particle_spec.vs .+= particle_spec.q/particle_spec.m*particle_spec.Es*dt
+        # particle_spec.vs .+= (particle_spec.q * e)/(particle_spec.m * me)*(particle_spec.Es * e/(eps0*dx^2)) * dt*dt/dx
     end
 end
 
 #= BIRDSALL & LANGDON EQ 3-5 (4) =#
 function update_particle_xs!(particle_list, node_list, N_nodes, BC)
-    if BC == "periodic"
-        for particle_spec in particle_list
-            particle_spec.xs = mod.(particle_spec.xs .+ particle_spec.vs, N_nodes)
+    for particle_spec in particle_list
+        particle_spec.xs .+= particle_spec.vs
+        if BC == "periodic"
+            particle_spec.xs = mod.(particle_spec.xs, N_nodes)
         end
-
-    else
-        for particle_spec in particle_list
-            particle_spec.xs .+= particle_spec.vs
-        end
-
     end
 end
 
@@ -213,6 +228,7 @@ function init_particle_vs!(particle_list, node_list, N_nodes, BC, dx, dt)
     update_particle_Es_phis!(particle_list, node_list, N_nodes, BC)
     for particle_spec in particle_list
         particle_spec.vs .+= (-particle_spec.q/2)/particle_spec.m*particle_spec.Es*dt
+        # particle_spec.vs .+= (particle_spec.q * e)/(2*particle_spec.m * me)*(particle_spec.Es * e/(eps0*dx^2)) * dt*dt/dx
     end
 end
 
@@ -221,20 +237,20 @@ function run_PIC(;
     qs = [-1, 1],
     ms = [1, mpme],
     # ms = [1, 10],
-    temps = [0.005, 0.00], # eV
+    temps = [0.005, 0.001], # eV
     drifts = [0.0, 0.0], # m/s
     n = [10^8, 10^8], #10^8
-    NPs = [2000, 2000], 
+    NPs = [500, 500], 
     L_sys = 0.5, # m
     dt = 1e-8, # s
     BC = "periodic", 
     # BC = "zero",
     # BC = "sheath",
     # pos_IC = "uniform_exact",
-    pos_IC = "uniform_exact_shuffle",
-    # pos_IC = "uniform_rand",
-    N_steps_max = 10000, 
-    N_steps_save = 100, 
+    # pos_IC = "uniform_exact_shuffle",
+    pos_IC = "uniform_rand",
+    N_steps_max = 1000, 
+    N_steps_save = 10, 
     plotting = false
     )
 
@@ -277,11 +293,9 @@ function run_PIC(;
         particle_list[k].xs = mod.(particle_list[k].xs, N_nodes) # start in domain regardless of boundary
 
         vel_dist_variance[k] = sqrt(temps[k]*e / (me*particle_list[k].m))
-        # particle_list[k].vs = (rand(Normal(0, sqrt(temps[k]*e / (me*particle_list[k].m/N_real_per_macro[k])) ), NPs[k]) .+ drifts[k]) * dt/dx
-        particle_list[k].vs = (rand(Normal(0.0, vel_dist_variance[k]), NPs[k]) .+ drifts[k]) * dt/dx
+        particle_list[k].vs = rand(Normal(drifts[k], vel_dist_variance[k]), NPs[k]) * dt/dx
 
-        shuffle!(RandomDevice(), particle_list[k].xs) # eliminate correlations
-        shuffle!(RandomDevice(), particle_list[k].vs)
+        shuffle!(RandomDevice(), particle_list[k].vs) # eliminate correlations
     end
     init_particle_vs!(particle_list, node_list, N_nodes, BC, dx, dt)
 
@@ -333,16 +347,16 @@ function run_PIC(;
     moving_avg_v_log = [zeros(length(particle_list[i].xs)) for i=1:N_species]
     moving_avg_phi_log = zeros(N_nodes)
     moving_avg_E_log = zeros(N_nodes)
-    # N_steps_avg = N_steps_save/10
-    N_steps_avg = 10
+    N_steps_avg = max(round(Int64, N_steps_save/10), 1)
+    # N_steps_avg = 10
 
     #= VELOCITY DISTRIBUTION TRACKING =#
     # mean, variance, mean error, variance error
     vel_dist_params = [[[] for j = 1:4] for i=1:N_species]
 
     #= PARTICLE POSITION TRACKING FOR FFT =#
-    particle_pos = [Array{Float64, 1}(undef, N_steps_max) for i=1:NPs[1]]
-    fft_freqs = [i*1/dt/N_steps_max for i = 0:N_steps_max-1]
+    # particle_pos = [Array{Float64, 1}(undef, N_steps_max) for i=1:NPs[1]]
+    # fft_freqs = [i*1/dt/N_steps_max for i = 0:N_steps_max-1]
 
     step_idx = 0
     fig_idx = 3
@@ -353,7 +367,7 @@ function run_PIC(;
         update_node_phi!(particle_list, node_list, N_nodes, dx, BC)
         update_node_E!(node_list, N_nodes, BC)
         update_particle_Es_phis!(particle_list, node_list, N_nodes, BC)
-        update_particle_vs!(particle_list, dt)
+        update_particle_vs!(particle_list, dx, dt)
         update_particle_xs!(particle_list, node_list, N_nodes, BC)
         step_idx += 1
         if mod(step_idx, round(min(N_steps_max/10, 100))) == 0 # TRACK PROGRESS
@@ -365,9 +379,10 @@ function run_PIC(;
             end
         end
 
-        for i = 1:NPs[1]
-            particle_pos[i][step_idx] = particle_list[1].xs[i] * dx
-        end
+        #= PARTICLE POSITION TRACKING FOR FFT =#
+        # for i = 1:NPs[1]
+        #     particle_pos[i][step_idx] = particle_list[1].xs[i] * dx
+        # end
 
         #= ENERGY CONSERVATION TRACKING =#
         for k in 1:N_species
@@ -470,31 +485,31 @@ function run_PIC(;
     #= ENERGY CONSERVATION PLOTS =#
     fig1 = figure(0)
     fig1.clf()
-    fig1.set_size_inches(12, 8)
+    fig1.set_size_inches(8, 6)
     fig2 = figure(1)
     fig2.clf()
-    fig2.set_size_inches(12, 8)
+    fig2.set_size_inches(8, 6)
     fig3 = figure(2)
     fig3.clf()
-    fig3.set_size_inches(12, 8)
+    fig3.set_size_inches(8, 6)
     (ax1, ax2, ax3) = fig1.subplots(nrows = 3, ncols = 1)
     (ax4, ax5, ax6) = fig2.subplots(nrows = 3, ncols = 1)
     (ax7, ax8, ax9) = fig3.subplots(nrows = 3, ncols = 1)
     fig1.suptitle("Electron Energy Conservation",fontsize=14,fontweight="bold")
-    ax1.set_title("Kinetic Energy, J")
-    ax2.set_title("Potential Energy, J")
-    ax3.set_title("Total Energy, J")
-    ax3.set_xlabel("Time, s")
-    fig2.suptitle("Proton Energy Conservation",fontsize=14,fontweight="bold")
-    ax4.set_title("Kinetic Energy, J")
-    ax5.set_title("Potential Energy, J")
-    ax6.set_title("Total Energy, J")
-    ax6.set_xlabel("Time, s")
-    fig3.suptitle("Total Energy Conservation",fontsize=14,fontweight="bold")
-    ax7.set_title("Kinetic Energy, J")
-    ax8.set_title("Electric Potential Energy, J")
-    ax9.set_title("Total Energy, J")
-    ax9.set_xlabel("Time, s")
+    ax1.set_title("Kinetic Energy, J", fontsize=12)
+    ax2.set_title("Potential Energy, J", fontsize=12)
+    ax3.set_title("Total Energy, J", fontsize=12)
+    ax3.set_xlabel("Time, s", fontsize=12)
+    fig2.suptitle("Proton Energy Conservation",fontsize=10,fontweight="bold")
+    ax4.set_title("Kinetic Energy, J", fontsize=12)
+    ax5.set_title("Potential Energy, J", fontsize=12)
+    ax6.set_title("Total Energy, J", fontsize=12)
+    ax6.set_xlabel("Time, s", fontsize=12)
+    fig3.suptitle("Total Energy Conservation",fontsize=10,fontweight="bold")
+    ax7.set_title("Kinetic Energy, J", fontsize=12)
+    ax8.set_title("Electric Potential Energy, J", fontsize=12)
+    ax9.set_title("Total Energy, J", fontsize=12)
+    ax9.set_xlabel("Time, s", fontsize=12)
     ax1.plot(times, KE_spec[1],
         color = (0,0,0), 
         linestyle = "-", 
@@ -537,9 +552,9 @@ function run_PIC(;
     fig1.tight_layout(rect=[0, 0, 1, 0.96])
     fig2.tight_layout(rect=[0, 0, 1, 0.96])
     fig3.tight_layout(rect=[0, 0, 1, 0.96])
-    fig1.savefig("PIC Output/Energy Conservation Electrons.png", dpi=100)
-    fig2.savefig("PIC Output/Energy Conservation Protons.png", dpi=100)
-    fig3.savefig("PIC Output/Energy Conservation Total.png", dpi=100)
+    fig1.savefig("PIC Output/Energy Conservation Electrons.png", dpi=200)
+    fig2.savefig("PIC Output/Energy Conservation Protons.png", dpi=200)
+    fig3.savefig("PIC Output/Energy Conservation Total.png", dpi=200)
     close(fig1)
     close(fig2)
     close(fig3)
@@ -579,10 +594,10 @@ function run_PIC(;
     write(savefile, diagnostics_string)
     close(savefile)
 
-    particle_fft = [Array{Float64, 1}(undef, N_steps_max) for i=1:NPs[1]]
-    for i = 1:NPs[1]
-        particle_fft[i] = abs.(fft(particle_pos[i]))
-    end
+    # particle_fft = [Array{Float64, 1}(undef, N_steps_max) for i=1:NPs[1]]
+    # for i = 1:NPs[1]
+    #     particle_fft[i] = abs.(fft(particle_pos[i]))
+    # end
 
-    return TEs, particle_fft, fft_freqs
+    # return TEs
 end
