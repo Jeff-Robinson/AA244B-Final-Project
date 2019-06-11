@@ -6,6 +6,9 @@ Jeff Robinson - jbrobin@stanford.edu
 using PyPlot
 using Distributions
 using LinearAlgebra
+using Random
+using DataFrames
+using GLM
 
 ## CONSTANTS ##
 kb = 1.3806485279*10^-23 #J/K
@@ -54,19 +57,14 @@ function make_particles(names, NPs, qs, ms)
     return particle_list, N_species
 end
 
-function make_nodes(L_sys, N_nodes, BC)
-    if BC == "zero" || BC == "sheath"
-        dx = L_sys/(N_nodes-1)
-    elseif BC == "periodic"
-        dx = L_sys/N_nodes
-    end
+function make_nodes(N_nodes)
     node_list = PIC_node_list(
         [x for x in 0:N_nodes-1], # Xs
         zeros(N_nodes), # charges
         zeros(N_nodes), # phis
         zeros(N_nodes) # Es
         )
-    return node_list, dx
+    return node_list
 end
 
 #= BIRDSALL & LANGDON EQ 2-6 (1-2) =#
@@ -130,7 +128,7 @@ function update_node_phi!(particle_list, node_list, N_nodes, dx, BC)
     elseif BC == "periodic"
         A = Symmetric(A)
     end
-    node_list.phis = A \ -node_list.charges/2
+    node_list.phis = A \ (-node_list.charges/2)
 end
 
 #= BIRDSALL & LANGDON EQ 2-5 (4) =#
@@ -151,7 +149,7 @@ function update_node_E!(node_list, N_nodes, BC)
 end
 
 #= BIRDSALL & LANGDON EQ 2-6 (3) =#
-function update_particle_Es!(particle_list, node_list, N_nodes, BC)
+function update_particle_Es_phis!(particle_list, node_list, N_nodes, BC)
     if BC == "zero" || BC == "sheath"
         for particle_spec in particle_list
             for i = 1:length(particle_spec.xs)
@@ -211,39 +209,78 @@ function init_particle_vs!(particle_list, node_list, N_nodes, BC, dx, dt)
     update_node_charge!(particle_list, node_list, N_nodes, BC)
     update_node_phi!(particle_list, node_list, N_nodes, dx, BC)
     update_node_E!(node_list, N_nodes, BC)
-    update_particle_Es!(particle_list, node_list, N_nodes, BC)
+    update_particle_Es_phis!(particle_list, node_list, N_nodes, BC)
     for particle_spec in particle_list
         particle_spec.vs .+= (-particle_spec.q/2)/particle_spec.m*particle_spec.Es*dt
     end
 end
 
-function init_PIC(;
+function run_PIC(;
     names = ["electrons", "protons"], 
     qs = [-1, 1],
     ms = [1, mpme],
-    temps = [0.001, 0.001], # eV
+    # ms = [1, 10],
+    temps = [0.005, 0.005], # eV
     drifts = [0.0, 0.0], # m/s
     n = [10^8, 10^8], #10^8
-    NPs = [5000, 5000], 
+    NPs = [2000, 2000], 
     L_sys = 0.5, # m
     dt = 1e-8, # s
-    BC
+    BC = "periodic", 
+    # BC = "zero",
+    # BC = "sheath",
+    # pos_IC = "uniform_exact",
+    pos_IC = "uniform_exact_shuffle",
+    # pos_IC = "uniform_rand",
+    N_steps_max = 1000, 
+    N_steps_save = 10, 
+    plotting = false
     )
 
+    # particle_list, N_species, node_list, N_nodes, dx, dt = init_PIC(BC = BC)
+    
+    #=
+    ultra low Density (just reduce particle count)
+    ultra high Density
+    induce electric field
+    add charge clumping
+    plot distribution fxn after generation
+    make linear fit of energy and plot for each sim
+    SPURIOUS ELECTRIC FIELDS
+    =#
+    
     N_nodes = round(Int64, maximum(NPs)/10) # 10 particles per cell
+    node_list = make_nodes(N_nodes)
+
     N_real_per_macro = n ./ NPs * L_sys
     qs .*= N_real_per_macro
     ms .*= N_real_per_macro
-
     particle_list, N_species = make_particles(names, NPs, qs, ms)
-    node_list, dx = make_nodes(L_sys, N_nodes, BC)
+
+    if BC == "zero" || BC == "sheath"
+        dx = L_sys/(N_nodes-1)
+    elseif BC == "periodic"
+        dx = L_sys/N_nodes
+    end
+
+    vel_dist_variance = zeros(N_species)
     for k = 1:N_species
-        if BC == "periodic"
-            particle_list[k].xs = rand(Uniform(0, node_list.Xs[end]+1), NPs[k])
-        else
-            particle_list[k].xs = rand(Uniform(0, node_list.Xs[end]), NPs[k])
+        if pos_IC == "uniform_rand"
+            particle_list[k].xs = rand(Uniform(0, L_sys/dx), NPs[k])
+        elseif pos_IC=="uniform_exact" || pos_IC=="uniform_exact_shuffle"
+            particle_list[k].xs = [L_sys/(NPs[k]*dx)*(i + k/N_species) for i = 0:NPs[k]-1]
+            if pos_IC == "uniform_exact_shuffle"
+                particle_list[k].xs .*= (1 .+.01*(rand(RandomDevice(), NPs[k]).-0.5))
+            end
         end
-        particle_list[k].vs = (rand(Normal(0, sqrt(temps[k]*e / (me*particle_list[k].m/N_real_per_macro[k])) ), NPs[k]) .+ drifts[k]) * dt/dx
+        particle_list[k].xs = mod.(particle_list[k].xs, N_nodes) # start in domain regardless of boundary
+
+        vel_dist_variance[k] = sqrt(temps[k]*e / (me*particle_list[k].m))
+        # particle_list[k].vs = (rand(Normal(0, sqrt(temps[k]*e / (me*particle_list[k].m/N_real_per_macro[k])) ), NPs[k]) .+ drifts[k]) * dt/dx
+        particle_list[k].vs = (rand(Normal(0.0, vel_dist_variance[k]), NPs[k]) .+ drifts[k]) * dt/dx
+
+        shuffle!(RandomDevice(), particle_list[k].xs) # eliminate correlations
+        shuffle!(RandomDevice(), particle_list[k].vs)
     end
     init_particle_vs!(particle_list, node_list, N_nodes, BC, dx, dt)
 
@@ -252,35 +289,34 @@ function init_PIC(;
     debye_macro = sqrt(eps0*temps[1]/(length(particle_list[1].xs)/L_sys*e*abs(particle_list[1].q)))
     wp_real = sqrt(n[1]*e^2/(eps0*me))
     wp_macro = sqrt(length(particle_list[1].xs)/L_sys*(e*particle_list[1].q)^2/(eps0*me*particle_list[1].m))
-    println(
-              "                  Particle types: ", names, 
-            "\n                    Temperatures: ", temps, " eV",
-            "\n        Number of macroparticles: ", NPs, 
-            "\n                Number Density n: ", n,
-            "\nReal particles per macroparticle: ", N_real_per_macro, 
-            "\n                      Node Count: ", N_nodes, 
-            "\n                     System size: ", L_sys, " m",
-            "\n                              dx: ", dx, " m",
-            "\n               Real Debye Length: ", debye_real, " m",
-            "\n              Macro Debye Length: ", debye_macro, " m",
-            "\n        dx per Real Debye Length: ", debye_real/dx,
-            "\n           Real Plasma Frequency: ", wp_real,
-            "\n          Macro Plasma Frequency: ", wp_macro,
-            "\n Time steps / plasma oscillation: ", 1/(dt*wp_real)
-            )
-    return particle_list, N_species, node_list, N_nodes, dx, dt
-end
 
-function run_PIC(;
-    BC = "periodic", 
-    # BC = "zero",
-    # BC = "sheath",
-    N_steps_max = 1000, 
-    N_steps_save = 100, 
-    plotting = false
-    )
-
-    particle_list, N_species, node_list, N_nodes, dx, dt = init_PIC(BC = BC)
+    inputs_string = 
+    """
+                      Particle types: $(names)
+                    Particle charges: $(qs./N_real_per_macro) e
+                     Particle masses: $(ms./N_real_per_macro) me
+                        Temperatures: $(temps) eV
+                    Drift Velocities: $(drifts) m/s
+            Number of macroparticles: $(NPs) 
+                    Number Density n: $(n)
+    Real particles per macroparticle: $(N_real_per_macro) 
+                          Node Count: $(N_nodes)
+                         System size: $(L_sys) m
+                Grid node spacing dx: $(dx) m
+                   Real Debye Length: $(debye_real) m
+                  Macro Debye Length: $(debye_macro) m
+            dx per Real Debye Length: $(debye_real/dx)
+               Real Plasma Frequency: $(wp_real)
+              Macro Plasma Frequency: $(wp_macro)
+                        Time step dt: $(dt)
+     Time steps / plasma oscillation: $(1/(dt*wp_real))
+      Number of time steps simulated: $(N_steps_max)
+                  Boundary Condition: $(BC)
+          Initial Position Condition: $(pos_IC)
+    """
+    println(inputs_string)
+    savefile = open("PIC Output/Inputs.txt", "w")
+    write(savefile, inputs_string)
 
     #= ENERGY CONSERVATION TRACKING =#
     KE_spec = [Array{Float64, 1}(undef, N_steps_max) for i=1:N_species]
@@ -291,40 +327,37 @@ function run_PIC(;
     TEs = Array{Float64, 1}(undef, N_steps_max)
     # PE_alt = Array{Float64, 1}(undef, N_steps_max) # from grid nodes
 
-    #= MOVING AVERAGES FOR PLOTTING =#
-    if plotting == true
-        moving_avg_x_log = [zeros(length(particle_list[i].xs)) for i=1:N_species]
-        moving_avg_v_log = [zeros(length(particle_list[i].xs)) for i=1:N_species]
-        moving_avg_phi_log = zeros(N_nodes)
-        moving_avg_E_log = zeros(N_nodes)
-        N_steps_avg = N_steps_save/10
-    end
+    #= MOVING AVERAGES =#
+    moving_avg_x_log = [zeros(length(particle_list[i].xs)) for i=1:N_species]
+    moving_avg_v_log = [zeros(length(particle_list[i].xs)) for i=1:N_species]
+    moving_avg_phi_log = zeros(N_nodes)
+    moving_avg_E_log = zeros(N_nodes)
+    # N_steps_avg = N_steps_save/10
+    N_steps_avg = 10
+
+    #= VELOCITY DISTRIBUTION TRACKING =#
+    # mean, variance, mean error, variance error
+    vel_dist_params = [[[] for j = 1:4] for i=1:N_species]
 
     step_idx = 0
-    fig_idx = 0
+    fig_idx = 3
     println("Progress:")
+    #= MAIN SIMULATION LOOP =#
     while step_idx < N_steps_max
         update_node_charge!(particle_list, node_list, N_nodes, BC)
         update_node_phi!(particle_list, node_list, N_nodes, dx, BC)
         update_node_E!(node_list, N_nodes, BC)
-        update_particle_Es!(particle_list, node_list, N_nodes, BC)
+        update_particle_Es_phis!(particle_list, node_list, N_nodes, BC)
         update_particle_vs!(particle_list, dt)
         update_particle_xs!(particle_list, node_list, N_nodes, BC)
-
         step_idx += 1
         if mod(step_idx, round(min(N_steps_max/10, 100))) == 0 # TRACK PROGRESS
-            print("\e[2K")
-            print("\e[1G")
+            print("\e[2K") # clear line
+            print("\e[1G") # move cursor to first column
             print(step_idx," / ",N_steps_max)
             if step_idx == N_steps_max
                 print("\n")
             end
-        end
-
-        #= MOVING AVERAGES FOR PLOTTING =#
-        if plotting == true && mod(step_idx, N_steps_save) >= N_steps_save-N_steps_avg
-            moving_avg_phi_log .+= node_list.phis * e/(eps0*dx)
-            moving_avg_E_log .+= node_list.Es * e/(eps0*dx^2)
         end
 
         #= ENERGY CONSERVATION TRACKING =#
@@ -337,9 +370,18 @@ function run_PIC(;
             TE_spec[k][step_idx] = KE_spec[k][step_idx] + PE_spec[k][step_idx]
 
             #= MOVING AVERAGES FOR PLOTTING =#
-            if plotting == true && mod(step_idx, N_steps_save) >= N_steps_save-N_steps_avg
+            if mod(step_idx, N_steps_save) >= N_steps_save-N_steps_avg
                 moving_avg_x_log[k] .+= particle_list[k].xs * dx
                 moving_avg_v_log[k] .+= particle_list[k].vs * dx/dt
+            end
+
+            #= VELOCITY DISTRIBUTION =#
+            if mod(step_idx, N_steps_save) == 0
+                vel_dist = params(fit(Normal, moving_avg_v_log[k]/N_steps_avg))
+                push!(vel_dist_params[k][1], vel_dist[1])
+                push!(vel_dist_params[k][2], vel_dist[2])
+                push!(vel_dist_params[k][3], (vel_dist[1])/vel_dist_variance[k])
+                push!(vel_dist_params[k][4], (vel_dist[2] - vel_dist_variance[k])/vel_dist_variance[k])
             end
         end
         KEs[step_idx] = sum([KE_spec[i][step_idx] for i=1:N_species])
@@ -347,8 +389,14 @@ function run_PIC(;
         TEs[step_idx] = sum([TE_spec[i][step_idx] for i=1:N_species])
         # PE_alt[step_idx] = sum(node_list.phis * e/(eps0*dx) * node.charge * e)
 
-        #= PLOTTING =#
-        if plotting == true
+        #= MOVING AVERAGES FOR PLOTTING =#
+        if mod(step_idx, N_steps_save) >= N_steps_save-N_steps_avg
+            moving_avg_phi_log .+= node_list.phis * e/(eps0*dx)
+            moving_avg_E_log .+= node_list.Es * e/(eps0*dx^2)
+        end
+
+        #= PHASE SPACE & NODE PLOTS =#
+        if plotting == true || step_idx == 1
             if step_idx == 1 || mod(step_idx, N_steps_save) == 0
                 fig_idx += 1
                 fig1 = figure(fig_idx) # phase space
@@ -389,7 +437,7 @@ function run_PIC(;
                 end
                 fig1.set_size_inches(10, 8)
                 fig1.tight_layout()
-                fig1.savefig("PIC Output/fig_$(fig_idx).png", dpi=50)
+                fig1.savefig("PIC Output/fig_$(fig_idx-3).png", dpi=50)
                 close(fig1)
 
                 moving_avg_x_log = [zeros(length(particle_list[i].xs)) for i=1:N_species]
@@ -402,6 +450,13 @@ function run_PIC(;
 
     times = [i*dt for i = 1:N_steps_max]
 
+    #= TOTAL ENERGY LINEAR FIT =#
+    TE_DF = DataFrame(times = times, TEs = TEs)
+    TE_lm = lm(@formula(TEs ~ times), TE_DF)
+    TE_coeffs = coef(TE_lm)
+    TE_fit = TE_coeffs[1] .+ TE_coeffs[2]*times
+
+    #= ENERGY CONSERVATION PLOTS =#
     fig1 = figure(0)
     fig1.set_size_inches(12, 8)
     fig2 = figure(1)
@@ -462,24 +517,50 @@ function run_PIC(;
     ax9.plot(times, TEs,
         color = (0,0,0), 
         linestyle = "-")
+    ax9.plot(times, TE_fit, # TE LINEAR FIT
+        color = (0.5,0.5,0.5), 
+        linestyle = ":")
     fig1.tight_layout(rect=[0, 0, 1, 0.96])
     fig2.tight_layout(rect=[0, 0, 1, 0.96])
     fig3.tight_layout(rect=[0, 0, 1, 0.96])
-    if plotting == true
-        fig1.savefig("PIC Output/_Electron Energy Conservation.png", dpi=100)
-        fig2.savefig("PIC Output/_Proton Energy Conservation.png", dpi=100)
-        fig3.savefig("PIC Output/_Total Energy Conservation.png", dpi=100)
+    fig1.savefig("PIC Output/Energy Conservation Electrons.png", dpi=100)
+    fig2.savefig("PIC Output/Energy Conservation Protons.png", dpi=100)
+    fig3.savefig("PIC Output/Energy Conservation Total.png", dpi=100)
+
+    max_TE = max(maximum(TEs)-TEs[1], TEs[1]-minimum(TEs))/TEs[1]*100
+    RMS_TE = sum(((TEs.-TEs[1])/TEs[1]).^2/N_steps_max)*100
+    RMS_vel_mu_err = zeros(N_species)
+    RMS_vel_var_err = zeros(N_species)
+    mean_vel_mu_err = zeros(N_species)
+    mean_vel_var_err = zeros(N_species)
+    for k in 1:N_species
+        RMS_vel_mu_err[k] = sqrt(sum(vel_dist_params[k][3].^2)/length(vel_dist_params[k][3]))
+        RMS_vel_var_err[k] = sqrt(sum(vel_dist_params[k][4].^2)/length(vel_dist_params[k][4]))
+        mean_vel_mu_err[k] = sum(vel_dist_params[k][3])/length(vel_dist_params[k][3])
+        mean_vel_var_err[k] = sum(vel_dist_params[k][4])/length(vel_dist_params[k][4])
     end
+    diagnostics_string = 
+    """
+    
+    ENERGY CONSERVATION
+    Max Total Energy Error: $(max_TE) %
+    RMS Total Energy Error: $(RMS_TE) %
+    Last Step Total Energy Error: $((TEs[end]-TEs[1])/TEs[1]*100) %
+    Total Energy Linear Fit Slope: $(TE_coeffs[2]/TEs[1]*100*dt) %/dt
 
-    println(#"\nMax Kinetic Energy Error: ", 
-            #max(maximum(KEs)-KEs[1], KEs[1]-minimum(KEs))/KEs[1]*100," %",
-            #"\nMax Potential Energy Error: ", 
-            #max(maximum(PEs)-PEs[1], PEs[1]-minimum(PEs))/PEs[1]*100," %",
-            "\nMax Total Energy Error: ", 
-            max(maximum(TEs)-TEs[1], TEs[1]-minimum(TEs))/TEs[1]*100," %",
-            "\nRMS Total Energy Error: ", 
-            sum(((TEs.-TEs[1])/TEs[1]).^2/N_steps_max)*100, " %\n"
-            )
+    VELOCITY DISTRIBUTION
+    RMS Mean Error: $(RMS_vel_mu_err*100) %
+    RMS Variance Error: $(RMS_vel_var_err*100) %
+    Mean Mean Error: $(mean_vel_mu_err*100) %
+    Mean Variance Error: $(mean_vel_var_err*100) %
+    First Step Mean Error: $([vel_dist_params[1][3][1]*100, vel_dist_params[2][3][1]*100]) %
+    First Step Variance Error: $([vel_dist_params[1][3][1]*100, vel_dist_params[2][3][1]*100]) %
+    Last Step Mean Error: $([vel_dist_params[1][3][end]*100, vel_dist_params[2][3][end]*100]) %
+    Last Step Variance Error: $([vel_dist_params[1][3][end]*100, vel_dist_params[2][3][end]*100]) %
+    """
+    println(diagnostics_string)
+    write(savefile, diagnostics_string)
+    close(savefile)
 
-    return KE_spec, PE_spec, TE_spec, KEs, PEs, TEs
+    return KEs, PEs, TEs, vel_dist_params
 end
