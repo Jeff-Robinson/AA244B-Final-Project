@@ -132,7 +132,11 @@ function update_node_phi!(particle_list, node_list, N_nodes, dx, BC)
     # end
 
     #= Birdsall & Langdon Appendix D, EQ. (3) & (5) =#
-    max_idx = N_nodes - 2
+    if BC == "periodic"
+        max_idx = N_nodes - 1
+    else
+        max_idx = N_nodes - 2
+    end
     A = zeros(max_idx, max_idx)
     for i = 1:max_idx
         A[i, i] = -2
@@ -140,7 +144,10 @@ function update_node_phi!(particle_list, node_list, N_nodes, dx, BC)
         A[i, mod(i, max_idx)+1] = 1
     end
     A = Tridiagonal(A)
-    if BC == "periodic" || BC == "zero"
+    if BC == "periodic"
+        node_list.phis[1] = 0.0
+        node_list.phis[2:end] = A \ (-node_list.charges[2:end]/2)
+    elseif BC == "zero"
         node_list.phis[1], node_list.phis[end] = 0.0, 0.0
         node_list.phis[2:end-1] = A \ (-node_list.charges[2:end-1]/2)
     elseif BC == "sheath"
@@ -247,8 +254,8 @@ function run_PIC(;
     # BC = "zero",
     # BC = "sheath",
     # pos_IC = "uniform_exact",
-    pos_IC = "uniform_exact_1percentshuffle",
-    # pos_IC = "uniform_rand",
+    # pos_IC = "uniform_exact_1percentshuffle",
+    pos_IC = "uniform_rand",
     N_steps_max = 1000, 
     N_steps_save = 10, 
     plotting = false
